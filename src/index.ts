@@ -53,6 +53,8 @@ import { handleShareExport, SHARE_EXPORT_ROUTE } from './share-export.js'
 import { createShareStore } from './share-store.js'
 import { createRelayPool } from './relay-pool.js'
 import { ensurePeerIdentity, readPeerNetwork } from './state-store.js'
+import { NewConversationHost, NewConversationError, isManagedConversation, parseNewConversationRequest, saveRecentConversationHost } from './new-conversation/index.js'
+import { createNewConversationRoute, NEW_CONVERSATION_ROUTE } from './new-conversation-routes.js'
 import type { RelayPool } from './relay-pool.js'
 import { createPeerEngine } from './peer/engine.js'
 import type { PeerEngine } from './peer/engine.js'
@@ -254,6 +256,7 @@ export interface MobileNavConfig {
   /** Max upload body in bytes; larger bodies get 413. Default {@link DEFAULT_MAX_UPLOAD_BYTES}.
    * Volatile: re-read per request through `unwrapVolatile`. */
   maxUploadBytes?: unknown
+  recentConversationHost?: unknown
   /** Fold each turn's process at every viewport width, not just below the
    * phone breakpoint. Default false (phone-only). A browser can still opt
    * itself in via `?mobile-nav-turn-fold=1` when this is off. Volatile:
@@ -739,6 +742,7 @@ export function apply(ctx: Context, config: MobileNavConfig = {}): void {
   bridgeRegistry = registry
   try {
     const service: ZenRemoteService = {
+      supportsHostLocator: true,
       bridge: (declaration: BridgeDeclaration) => registry.register(declaration),
     }
     ctx.provide('zenRemote', service)
@@ -863,6 +867,30 @@ export function apply(ctx: Context, config: MobileNavConfig = {}): void {
    * historic owner of the stop — never fires). */
   const cliManagedChildren: Array<{ stop(): void }> = []
   const home = process.env.DSH_HOME ?? join(homedir(), '.dsh')
+  const newConversation = new NewConversationHost({
+    get: name => (ctx.root as unknown as { reflect?: { get(key: string): unknown } }).reflect?.get(name),
+    journalDirectory: join(home, 'zen-remote-new-conversations'),
+  })
+  let publishNewRemoteSession = (_sessionId: string): void => {}
+  let submitLocalConversation: Parameters<typeof createNewConversationRoute>[0]['submitLocal'] =
+    request => newConversation.submit('local-owner', request)
+  ctx.inject(['webServer', 'connection'], webCtx => {
+    webCtx.effect(() => webCtx.webServer.register({
+      kind: 'exact',
+      path: NEW_CONVERSATION_ROUTE,
+      handler: createNewConversationRoute({
+        admit: createAdmitFn(webCtx),
+        getPool: getRelayPool,
+        getRecentHost: () => {
+          const configured = unwrapVolatile(config.recentConversationHost)
+          return typeof configured === 'string' && /^(?:local|[a-f0-9]{8})$/u.test(configured) ? configured : 'local'
+        },
+        saveRecentHost: hostId => saveRecentConversationHost(ctx as unknown as Parameters<typeof saveRecentConversationHost>[0], hostId),
+        submitLocal: request => submitLocalConversation(request),
+        onRemoteCreated: sessionId => publishNewRemoteSession(sessionId),
+      }),
+    }), 'dsh-zen-remote: new conversation')
+  })
   // PG-8: the peer role runs BOTH halves, so the connects branch needs two
   // facts the serves branch owns — the relay secret (the marking header the
   // mux stamps onto every inbound virtual request) and the live relay
@@ -964,6 +992,15 @@ export function apply(ctx: Context, config: MobileNavConfig = {}): void {
     // teardown (identity-checked: a row reload builds a NEW handler before
     // the old one's disposer runs) — the admin route reads whatever is live
     // at request time and answers 0 viewers when none is mounted.
+    const confirmConversationShare = (sessionId: string, state: 'initial' | 'recovering' | 'confirmed'): void => {
+      const shared = state === 'confirmed' ? store.isShared(sessionId) : store.shareNewConversation(sessionId)
+      if (!shared) throw new NewConversationError(409, 'share-unconfirmed', 'The Session share could not be confirmed')
+      const agents = reflectNow()?.get('agents') as { list?: () => readonly AgentStatusLike[] } | undefined
+      restoreBusy(store, () => agents?.list?.() ?? [])
+    }
+    submitLocalConversation = request => newConversation.submit('local-owner', request,
+      resolveConfig(config, readFileConfig(), process.env).values.autoShareNewSessions
+        ? { confirmShare: confirmConversationShare } : {})
     let relayHandler: RelayHandler | undefined
     // Keep the table's clocks honest (T22c). The subscription mirrors
     // dsh-push.mjs's session/event listener — post-commit append feed for
@@ -1003,7 +1040,8 @@ export function apply(ctx: Context, config: MobileNavConfig = {}): void {
         // after it was pre-created, or its idle window expired in memory) and
         // was not manually unshared while blank, share it as Turn 1 starts so
         // `tracker.onEvent` right below marks it busy too.
-        if (isFirstTurnStart(session, event) && !manuallyUnshared.has(sessionId) && !store.isShared(sessionId)) {
+        if (!isManagedConversation(sessionId) && isFirstTurnStart(session, event)
+          && !manuallyUnshared.has(sessionId) && !store.isShared(sessionId)) {
           try {
             onSessionCreated(session.header, {
               store,
@@ -1045,6 +1083,7 @@ export function apply(ctx: Context, config: MobileNavConfig = {}): void {
           // whose share it inherits through its parent, and the forwarded
           // status frames the client needs to announce the row never left.
           parentIndex.observe(agent.session)
+          if (isManagedConversation(agent.id)) return
           const turnBoundaryOf = (s: unknown): TurnBoundaryLike | undefined => {
             const ag = reflectNow()?.get('agents') as { turnBoundaryOf?: (sess: unknown) => TurnBoundaryLike } | undefined
             return typeof ag?.turnBoundaryOf === 'function' ? ag.turnBoundaryOf(s) : undefined
@@ -1460,6 +1499,13 @@ export function apply(ctx: Context, config: MobileNavConfig = {}): void {
           secret: relaySecret,
           store,
           gateway: createLocalOnlyGateway(gatewayService),
+          createWithFirstMessage(device, incoming, authorize) {
+            const request = parseNewConversationRequest(incoming)
+            return newConversation.submit(`paired-device:${device}`, request, {
+              authorize,
+              confirmShare: confirmConversationShare,
+            })
+          },
           getApiFetch,
           // DSH 0.2.1-alpha.3: one cached owner/answer Peer for every relay
           // gateway call — `$events/result` must come from the Peer that
@@ -1930,6 +1976,7 @@ export function apply(ctx: Context, config: MobileNavConfig = {}): void {
         log: (format, ...args) => { logInfo(`dsh-zen-remote ${format}`, ...args) },
       })
       interceptHandle = handle
+      publishNewRemoteSession = id => handle.nudgeSummarySync([id])
       gatewayCtx.effect(() => () => {
         handle.uninstall()
         if (interceptHandle === handle) interceptHandle = undefined
@@ -2252,6 +2299,7 @@ export function apply(ctx: Context, config: MobileNavConfig = {}): void {
       getPeerIdentityError: () => peerIdentityError,
       getPeerNetworkOrigin: () => readPeerNetwork(clientStateFile)?.gatewayHttpOrigin,
       getPluginBridgeStatusForServer: pluginBridgeStatusFor,
+      bridgeRegistry: registry,
       getIntercept: interceptDiagnostics,
       getFetchRouteIntercept: fetchRouteDiagnostics,
       getServiceProbe: uploadServiceProbe(probeCtx),

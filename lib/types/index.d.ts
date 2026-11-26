@@ -67,6 +67,7 @@ export interface MobileNavConfig {
     /** Max upload body in bytes; larger bodies get 413. Default {@link DEFAULT_MAX_UPLOAD_BYTES}.
      * Volatile: re-read per request through `unwrapVolatile`. */
     maxUploadBytes?: unknown;
+    recentConversationHost?: unknown;
     /** Fold each turn's process at every viewport width, not just below the
      * phone breakpoint. Default false (phone-only). A browser can still opt
      * itself in via `?mobile-nav-turn-fold=1` when this is off. Volatile:

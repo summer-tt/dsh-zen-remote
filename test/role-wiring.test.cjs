@@ -227,7 +227,7 @@ test("role 'client' mounts all three routes through a real inject and never call
   // well — the three phone routes plus the client prefix route.
   assert.deepEqual(
     routes.map((r) => r.path).sort(),
-    [index.UPLOAD_ROUTE, index.CLIENT_CONFIG_ROUTE, share.SHARE_EXPORT_ROUTE, '/_dsh/zen-remote/client'].sort(),
+    [index.UPLOAD_ROUTE, index.CLIENT_CONFIG_ROUTE, share.SHARE_EXPORT_ROUTE, '/_dsh/zen-remote/client', '/_dsh/zen-remote/new-conversation'].sort(),
   )
 
   // Same wiring under the host role: the routes AND both sub-plugins. The
@@ -250,7 +250,7 @@ test("role 'client' mounts all three routes through a real inject and never call
   // T41a-fix2 that prefix serves remote-status ONLY (the dedicated T16 test
   // below drives the handler). GW-4 adds the wizard prefix under the admin
   // one, for 6.
-  assert.equal(hostRoutes.length, 6)
+  assert.equal(hostRoutes.length, 7)
 })
 
 test('admin routes register on the host role only', async () => {
@@ -474,7 +474,7 @@ test("T22a: role 'client' registers no relay route even with typertGateway avail
   // (T16) — the phone routes plus that prefix, still no relay anywhere.
   assert.deepEqual(
     record.routes.map((r) => r.path).sort(),
-    [index.UPLOAD_ROUTE, index.CLIENT_CONFIG_ROUTE, share.SHARE_EXPORT_ROUTE, '/_dsh/zen-remote/client'].sort(),
+    [index.UPLOAD_ROUTE, index.CLIENT_CONFIG_ROUTE, share.SHARE_EXPORT_ROUTE, '/_dsh/zen-remote/client', '/_dsh/zen-remote/new-conversation'].sort(),
     'exactly the phone routes and the client prefix — no relay prefix',
   )
   assert.ok(!record.routes.some((r) => r.path === '/_dsh/zen-remote/relay'), 'no relay route on the client role')

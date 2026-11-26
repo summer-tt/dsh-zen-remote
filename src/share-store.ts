@@ -62,6 +62,8 @@ export interface ShareStore {
   /** Enable remote for a session. True when newly shared; false when it was
    * already shared (sharedAt stays put, lastActivityAt refreshes to now). */
   share(sessionId: string): boolean
+  /** Persist an initial share once, including a marker that survives revocation. */
+  shareNewConversation(sessionId: string): boolean
   /** Remove a session from the table. True when it was actually removed. */
   unshare(sessionId: string, reason: UnshareReason): boolean
   /** Whether the session itself is in the table (inheritance NOT applied). */
@@ -264,6 +266,32 @@ export function createShareStore(options: ShareStoreOptions): ShareStore {
   }
 
   const store: ShareStore = {
+    shareNewConversation(sessionId) {
+      if (!isValidId(sessionId) || isVirtual(sessionId)) return false
+      const t = now()
+      let persisted: PersistedRow | undefined
+      writeStateFile(file, current => {
+        const markers = current.conversationShares ?? []
+        const existing = Object.hasOwn(current.sessions ?? {}, sessionId) ? current.sessions?.[sessionId] : undefined
+        if (markers.includes(sessionId)) {
+          if (existing !== undefined && sessions.has(sessionId)) persisted = existing
+          return current
+        }
+        persisted = existing ?? { sharedAt: t, lastActivityAt: t }
+        return {
+          ...current,
+          sessions: { ...current.sessions, [sessionId]: persisted },
+          conversationShares: [...markers, sessionId],
+        }
+      })
+      if (persisted === undefined) return false
+      if (!sessions.has(sessionId)) {
+        sessions.set(sessionId, { ...persisted, busy: false })
+        activityFlushedAt.set(sessionId, t)
+        emit({ type: 'shared', sessionId })
+      }
+      return true
+    },
     share(sessionId) {
       // A virtual id (`zr~<serverId>~…`) names a session that lives on a
       // REMOTE server — this table is the local server's access control, and
@@ -289,9 +317,16 @@ export function createShareStore(options: ShareStoreOptions): ShareStore {
 
     unshare(sessionId, reason) {
       if (!isValidId(sessionId) || !sessions.has(sessionId)) return false
+      const previous = sessions.get(sessionId)!
+      const previousFlush = activityFlushedAt.get(sessionId)
       sessions.delete(sessionId)
       activityFlushedAt.delete(sessionId)
       persist()
+      if (lastWriteError !== undefined) {
+        sessions.set(sessionId, previous)
+        if (previousFlush !== undefined) activityFlushedAt.set(sessionId, previousFlush)
+        return false
+      }
       emit({ type: 'unshared', sessionId, reason })
       return true
     },

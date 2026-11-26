@@ -30,8 +30,8 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Socket } from 'node:net'
 import { pluginBridgeError, responseJson } from './http.js'
 import { adapterPathMatches, adapterTailShapeViolation, locateAdapterIds, type NormalizedAdapterRoute } from './plugin-adapter-core.js'
-import { routeLocatorOf, routeMaxBodyOf, routeMethodsOf, routePrefixOf, routeUpgradesOf } from './plugin-bridge.js'
-import type { BridgeRegistry, NormalizedBridgeRoute, NormalizedDeclaration } from './plugin-bridge.js'
+import { isT3FavoritesBridge, isT3FavoritesPath, parseFavoriteUpdate, routeSessionLocatorOf, routeMaxBodyOf, routeMethodsOf, routePrefixOf, routeUpgradesOf, T3_FAVORITES_MAX_BODY_BYTES } from './plugin-bridge.js'
+import type { BridgeRegistry, NormalizedBridgeRoute, NormalizedDeclaration, SessionBridgeLocator } from './plugin-bridge.js'
 import type { PluginLoopback } from './plugin-loopback.js'
 
 /** The shared validation verdict for the two plugin routes (PB-3, reused by
@@ -65,7 +65,7 @@ export type PluginCallBodyReader = (maxBody: number) => Promise<
  * `prefix: true` becomes the adapter's `match: 'prefix'`). A hand-copied
  * predicate here could drift from the adapter segment's rule; the conversion
  * cannot. Only `path` and `match` are actually read by the matcher. */
-function asAdapterRoute(route: NormalizedBridgeRoute): NormalizedAdapterRoute {
+function asAdapterRoute(route: NormalizedBridgeRoute, locator: SessionBridgeLocator): NormalizedAdapterRoute {
   return {
     path: route.path,
     match: routePrefixOf(route) ? 'prefix' : 'exact',
@@ -73,7 +73,7 @@ function asAdapterRoute(route: NormalizedBridgeRoute): NormalizedAdapterRoute {
     maxBody: routeMaxBodyOf(route),
     stream: route.stream,
     upgrade: routeUpgradesOf(route),
-    locator: routeLocatorOf(route),
+    locator,
     local: false,
   }
 }
@@ -95,6 +95,7 @@ export async function validatePluginCall(
   isAccessible: (sessionId: string) => boolean,
   readJsonBody?: PluginCallBodyReader,
   device?: string,
+  httpMethod?: string,
 ): Promise<PluginCallValidation> {
   const declaration = bridge.registry.get(coords.pluginName)
   if (declaration === undefined) return { ok: false, status: 404, code: 'plugin-unknown' }
@@ -107,13 +108,22 @@ export async function validatePluginCall(
   // module-wide discipline) — the SAME rule the adapter segment applies, so
   // the sub-client's prefix forwarding (PB-21) is checked here against the
   // declaration instead of being trusted.
-  const route = declaration.routes.find((candidate) => adapterPathMatches(asAdapterRoute(candidate), coords.routePath))
-  if (route === undefined) return { ok: false, status: 404, code: 'route-undeclared' }
+  const route = declaration.routes.find((candidate) => {
+    const locator = routeSessionLocatorOf(candidate)
+    return locator === undefined
+      ? candidate.path === coords.routePath
+      : adapterPathMatches(asAdapterRoute(candidate, locator), coords.routePath)
+  })
+  if (route === undefined || (isT3FavoritesPath(coords.routePath) && !isT3FavoritesBridge(coords.pluginName, route))) {
+    return { ok: false, status: 404, code: 'route-undeclared' }
+  }
+  const locator = routeSessionLocatorOf(route)
+  const adapterRoute = locator === undefined ? undefined : asAdapterRoute(route, locator)
   // PB-23b: a prefix hit's variable tail carries the declaration-side shape
   // red lines itself (`?`, `#`, `..` — encoded forms included — and
   // whitespace; the shared rule, the adapter segment's too). 400
   // `bad-request`, the coordinate-shape code this chain already answers.
-  if (adapterTailShapeViolation(asAdapterRoute(route), coords.routePath)) {
+  if (adapterRoute !== undefined && adapterTailShapeViolation(adapterRoute, coords.routePath)) {
     return { ok: false, status: 400, code: 'bad-request' }
   }
   let params: URLSearchParams
@@ -122,10 +132,33 @@ export async function validatePluginCall(
   } catch {
     return { ok: false, status: 400, code: 'bad-query' }
   }
-  const locator = routeLocatorOf(route)
   let sessionId: string
   let bufferedBody: Buffer | undefined
-  if (locator.in === 'query') {
+  if (locator === undefined || adapterRoute === undefined) {
+    if (!isT3FavoritesBridge(coords.pluginName, route) || httpMethod === undefined) {
+      return { ok: false, status: 404, code: 'route-undeclared' }
+    }
+    if (!device) return { ok: false, status: 401, code: 'relay-unauthorized' }
+    if (!routeMethodsOf(route).includes(httpMethod)) return { ok: false, status: 405, code: 'method-undeclared' }
+    const ids = params.getAll('sessionId')
+    if (params.size !== ids.length || ids.length > 1 || ids[0] === '') {
+      return { ok: false, status: 400, code: 'bad-query' }
+    }
+    sessionId = ids[0] ?? ''
+    if (sessionId !== '' && !isAccessible(sessionId)) return { ok: false, status: 403, code: 'not-shared' }
+    // The session selector is relay authorization metadata only.
+    params.delete('sessionId')
+    if (httpMethod === 'POST') {
+      if (readJsonBody === undefined) return { ok: false, status: 400, code: 'bad-request' }
+      const read = await readJsonBody(Math.min(routeMaxBodyOf(route), T3_FAVORITES_MAX_BODY_BYTES))
+      if (read.kind === 'over') return { ok: false, status: 413, code: 'body-too-large' }
+      const update = read.kind === 'body' ? parseFavoriteUpdate(read.parsed) : undefined
+      if (update === undefined) return { ok: false, status: 400, code: 'bad-request' }
+      if (bridge.registry.get(coords.pluginName) !== declaration) return { ok: false, status: 409, code: 'plugin-mismatch' }
+      if (sessionId !== '' && !isAccessible(sessionId)) return { ok: false, status: 403, code: 'not-shared' }
+      bufferedBody = Buffer.from(JSON.stringify(update))
+    }
+  } else if (locator.in === 'query') {
     const ids = params.getAll(locator.name)
     const queryId = ids.length === 1 ? ids[0] : undefined
     if (queryId === undefined || queryId === '') return { ok: false, status: 400, code: 'bad-query' }
@@ -150,7 +183,7 @@ export async function validatePluginCall(
       bufferedBody = read.buffered
       parsedBody = read.parsed
     }
-    const hits = locateAdapterIds(asAdapterRoute(route), coords.routePath, params, parsedBody)
+    const hits = locateAdapterIds(adapterRoute, coords.routePath, params, parsedBody)
     // The sub-client only forwards a classified-remote request, so a v2
     // locator call that locates NOTHING is malformed here — the adapter
     // half's rule verbatim.
@@ -169,6 +202,7 @@ export async function validatePluginCall(
     }
     if (consent[coords.pluginName] !== true) return { ok: false, status: 403, code: 'consent-off' }
   }
+
   return { ok: true, declaration, route, params, sessionId, normalizedQuery: params.toString(), ...(bufferedBody !== undefined ? { bufferedBody } : {}) }
 }
 
@@ -305,7 +339,9 @@ function frameShareVerdict(route: NormalizedBridgeRoute, frame: Rfc6455Frame, is
   }
   let hits
   try {
-    hits = locateAdapterIds(asAdapterRoute(route), route.path, new URLSearchParams(), parsed)
+    const locator = routeSessionLocatorOf(route)
+    if (locator === undefined) return { ok: false, status: 400, code: 'bad-request' }
+    hits = locateAdapterIds(asAdapterRoute(route, locator), route.path, new URLSearchParams(), parsed)
   } catch {
     return { ok: false, status: 400, code: 'bad-query' }
   }
@@ -560,7 +596,7 @@ export function createPluginTunnel(options: CreatePluginTunnelOptions): PluginTu
         return
       }
       const id = (await import('node:crypto')).randomBytes(16).toString('hex')
-      const gated = routeUpgradesOf(validation.route) && routeLocatorOf(validation.route).in === 'json-body'
+      const gated = routeUpgradesOf(validation.route) && routeSessionLocatorOf(validation.route)?.in === 'json-body'
       const tunnel: Tunnel = {
         device,
         upstream,

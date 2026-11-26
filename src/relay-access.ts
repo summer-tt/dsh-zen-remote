@@ -373,6 +373,7 @@ const RELAY_METHODS: Record<string, RelayMethod> = {
   // error texts may carry endpoint or credential details the client never
   // shows (it keeps its own local failures instead).
   'session/modelCatalog': { fields: [], resultFilter: 'model-catalog' },
+  'session/modelCatalogForSession': { fields: ['request.sessionId'], resultFilter: 'model-catalog' },
   // job/*
   'job/list': { fields: ['request.sessionId'], stream: true },
   'job/follow': { fields: ['request.sessionId'], stream: true },

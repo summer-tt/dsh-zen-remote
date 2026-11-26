@@ -61,8 +61,8 @@
  */
 
 import { IncomingMessage, ServerResponse, type OutgoingHttpHeader, type OutgoingHttpHeaders } from 'node:http'
-import type { BridgeLocator, BridgeRegistry, BridgeStatus, NormalizedBridgeRoute } from './plugin-bridge.js'
-import { routeDeniesRemoteOf, routeLocatorOf, routeMaxBodyOf, routeMethodsOf, routePrefixOf, routeRewriteFieldsOf, routeRewritesIdsOf, routeUpgradesOf } from './plugin-bridge.js'
+import type { SessionBridgeLocator, BridgeRegistry, BridgeStatus, NormalizedBridgeRoute } from './plugin-bridge.js'
+import { routeDeniesRemoteOf, routeSessionLocatorOf, routeMaxBodyOf, routeMethodsOf, routePrefixOf, routeRewriteFieldsOf, routeRewritesIdsOf, routeUpgradesOf } from './plugin-bridge.js'
 import { PassThrough, Readable, Transform, Duplex } from 'node:stream'
 import { createHash, timingSafeEqual } from 'node:crypto'
 import { Socket } from 'node:net'
@@ -474,10 +474,10 @@ interface DeclaredHit {
   /** The declared route path — what an exact route forwards verbatim (a
    * prefix route forwards its full matched pathname instead). */
   path: string
-  /** The EFFECTIVE session-id locator (PB-21, {@link routeLocatorOf}): the
+  /** The EFFECTIVE session-id locator (PB-21, {@link routeSessionLocatorOf}): the
    * declared locator, or the 2.1 query-parameter convention read as one —
    * a route never runs without a locating rule. */
-  locator: BridgeLocator
+  locator: SessionBridgeLocator
   /** The EFFECTIVE prefix mark (PB-21, {@link routePrefixOf}): the route
    * admits its variable path tail. */
   prefix: boolean
@@ -513,7 +513,7 @@ interface DeclaredHit {
  * plugin-bridge effective reader; `deny` stays unset — the cooperative
  * `deny: true` flag is a static declaration, not an adapter-style hook, so
  * the surrogate halves judge it themselves (PB-22). */
-function bridgeRouteAsAdapterRoute(route: NormalizedBridgeRoute): NormalizedAdapterRoute {
+function bridgeRouteAsAdapterRoute(route: NormalizedBridgeRoute, locator: SessionBridgeLocator): NormalizedAdapterRoute {
   return {
     path: route.path,
     match: routePrefixOf(route) ? 'prefix' : 'exact',
@@ -521,7 +521,7 @@ function bridgeRouteAsAdapterRoute(route: NormalizedBridgeRoute): NormalizedAdap
     maxBody: routeMaxBodyOf(route),
     stream: route.stream,
     upgrade: routeUpgradesOf(route),
-    locator: routeLocatorOf(route),
+    locator,
     local: false,
   }
 }
@@ -1050,14 +1050,16 @@ export function installPluginRouteIntercept(options: InstallPluginRouteIntercept
   const declaredRouteOf = (pathname: string): DeclaredHit | undefined => {
     for (const declaration of registry.list()) {
       for (const route of declaration.routes) {
-        const view = bridgeRouteAsAdapterRoute(route)
+        const locator = routeSessionLocatorOf(route)
+        if (locator === undefined) continue
+        const view = bridgeRouteAsAdapterRoute(route, locator)
         if (!adapterPathMatches(view, pathname)) continue
         return {
           plugin: declaration.plugin,
           version: declaration.version,
           digest: declaration.digest,
           path: route.path,
-          locator: routeLocatorOf(route),
+          locator,
           prefix: routePrefixOf(route),
           methods: routeMethodsOf(route),
           maxBody: routeMaxBodyOf(route),
@@ -2089,7 +2091,7 @@ export function installPluginRouteIntercept(options: InstallPluginRouteIntercept
     path: string
     sessionParam: string
     deny: boolean
-    locator: BridgeLocator
+    locator: SessionBridgeLocator
     rewriteIds: boolean
     rewriteFields: readonly string[] | undefined
     view: NormalizedAdapterRoute
@@ -2099,7 +2101,8 @@ export function installPluginRouteIntercept(options: InstallPluginRouteIntercept
     if (!installed) return undefined
     for (const declaration of registry.list()) {
       for (const route of declaration.routes) {
-        if (route.path === pathname && routeUpgradesOf(route)) {
+        const locator = routeSessionLocatorOf(route)
+        if (locator !== undefined && route.path === pathname && routeUpgradesOf(route)) {
           return {
             plugin: declaration.plugin,
             version: declaration.version,
@@ -2107,10 +2110,10 @@ export function installPluginRouteIntercept(options: InstallPluginRouteIntercept
             path: route.path,
             sessionParam: route.sessionParam,
             deny: routeDeniesRemoteOf(route),
-            locator: routeLocatorOf(route),
+            locator,
             rewriteIds: routeRewritesIdsOf(route),
             rewriteFields: routeRewriteFieldsOf(route),
-            view: bridgeRouteAsAdapterRoute(route),
+            view: bridgeRouteAsAdapterRoute(route, locator),
             adapter: adapterRouteOf(pathname)?.adapter,
           }
         }

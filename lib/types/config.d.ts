@@ -242,6 +242,7 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
     ingressPublicUrl: z<any, any, "volatile">;
     logLevel: z<any, any, "volatile">;
     hideInactiveRemoteWorkspaces: z<any, any, "volatile">;
+    recentConversationHost: z<any, any, "volatile">;
     serverUrl: z<any, any, "volatile">;
     deviceToken: z<string, string, "volatile">;
     turnFoldDesktop: z<any, any, "volatile">;
@@ -277,6 +278,7 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
     ingressPublicUrl: z<any, any, "volatile">;
     logLevel: z<any, any, "volatile">;
     hideInactiveRemoteWorkspaces: z<any, any, "volatile">;
+    recentConversationHost: z<any, any, "volatile">;
     serverUrl: z<any, any, "volatile">;
     deviceToken: z<string, string, "volatile">;
     turnFoldDesktop: z<any, any, "volatile">;

@@ -2837,3 +2837,29 @@ test('PR78-R2-M1: gzip-negotiated sessionStatus/follow rechecks accessibility on
   assert.equal(frames.some((f) => f.type === 'changed' && f.state.sessionId === idB && f.state.completedTurn === 2), true)
   assert.equal(frames.some((f) => f.type === 'changed' && f.state.sessionId === idB && f.state.completedTurn === 3), true)
 })
+
+test('session-scoped raw catalog and model selection use the existing share wall', async (t) => {
+  const catalog = { default: { provider: 'magpie', model: 'foo' }, groups: [], failures: ['remote diagnostics'] }
+  const { handler, calls, store } = makeParts('session-host-models', { value: catalog })
+  const server = await startServer(handler)
+  t.after(() => server.stop())
+  const pathName = '/_dsh/zen-remote/relay/v1/invoke'
+  const invoke = (method, request) => server.fetch(pathName, post(pathName, { namespace: 'session', method, args: { request } }, AUTH))
+  const sessionId = 'session-private'
+  const modelSelection = { sessionId, provider: 'magpie', model: 'foo', reasoningEffort: 'high' }
+  for (const [method, request] of [['modelCatalogForSession', { sessionId }], ['selectModel', modelSelection]]) {
+    const denied = await invoke(method, request)
+    assert.equal(denied.status, 403)
+    assert.equal((await denied.json()).error.code, 'not-shared')
+  }
+  assert.deepEqual(calls, [])
+  store.share(sessionId)
+  const catalogResponse = await invoke('modelCatalogForSession', { sessionId })
+  assert.deepEqual(await catalogResponse.json(), { ok: true, value: { ...catalog, failures: [] } })
+  const selectResponse = await invoke('selectModel', modelSelection)
+  assert.equal((await selectResponse.json()).ok, true)
+  assert.deepEqual(calls.map(({ namespace, method, args }) => ({ namespace, method, args })), [
+    { namespace: 'session', method: 'modelCatalog', args: {} },
+    { namespace: 'session', method: 'selectModel', args: { request: modelSelection } },
+  ])
+})

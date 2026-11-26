@@ -163,6 +163,8 @@ export interface ZenRemoteStateFile {
   version: 1
   serverId?: string
   sessions?: Record<string, PersistedShareRow>
+  /** Sessions whose initial remote share has already been issued. */
+  conversationShares?: string[]
   servers?: PairedServerRecord[]
   /** PG-2: the peer halves' three blocks — identity, network membership,
    * TOFU anchors. `version` stays 1: readers of the older layout see a file
@@ -304,6 +306,9 @@ function readStateFileStrict(filePath: string): ZenRemoteStateFile {
     // bad field just drops the field here. The PG-2 peer blocks are the
     // exception: they carry key material, so a bad one drops at read time.
     if (isPlainObject(parsed.sessions)) state.sessions = parsed.sessions as Record<string, PersistedShareRow>
+    if (Array.isArray(parsed.conversationShares)) {
+      state.conversationShares = parsed.conversationShares.filter((id): id is string => typeof id === 'string')
+    }
     if (Array.isArray(parsed.servers)) state.servers = parsed.servers as PairedServerRecord[]
     if (isLegalPeerIdentity(parsed.peerIdentity)) state.peerIdentity = parsed.peerIdentity
     const peerNetwork = normalizePeerNetwork(parsed.peerNetwork)
@@ -393,6 +398,7 @@ export function writeStateFile(filePath: string, updater: (current: ZenRemoteSta
   const out: ZenRemoteStateFile = { version: 1 }
   if (isLegalServerId(merged.serverId)) out.serverId = merged.serverId
   if (isPlainObject(merged.sessions)) out.sessions = merged.sessions
+  if (Array.isArray(merged.conversationShares)) out.conversationShares = merged.conversationShares
   if (Array.isArray(merged.servers)) out.servers = merged.servers
   // The PG-2 peer blocks: write-time passthrough (the read path is the
   // validator), so the three-in-one belt covers them exactly like the rest.

@@ -57,6 +57,8 @@ export interface ShareStore {
     /** Enable remote for a session. True when newly shared; false when it was
      * already shared (sharedAt stays put, lastActivityAt refreshes to now). */
     share(sessionId: string): boolean;
+    /** Persist an initial share once, including a marker that survives revocation. */
+    shareNewConversation(sessionId: string): boolean;
     /** Remove a session from the table. True when it was actually removed. */
     unshare(sessionId: string, reason: UnshareReason): boolean;
     /** Whether the session itself is in the table (inheritance NOT applied). */

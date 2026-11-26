@@ -266,6 +266,7 @@ export const CLIENT_METHOD_FIELDS: Readonly<Record<string, readonly SessionField
   // two reads above it owns no field; the merge route folds the relay's
   // answer in as virtual provider groups (merge-streams.ts).
   'session/modelCatalog': [],
+  'session/modelCatalogForSession': ['request.sessionId'],
   // job/*
   'job/list': ['request.sessionId'],
   'job/follow': ['request.sessionId'],
@@ -412,6 +413,7 @@ export const REMOTE_READ_METHODS: ReadonlySet<string> = new Set([
   // T52: the model catalog read (the merge route answers it locally when the
   // relay is not serving, so classification only matters for the record).
   'session/modelCatalog',
+  'session/modelCatalogForSession',
   'session/page',
   'session/projections',
   'session/attachment',

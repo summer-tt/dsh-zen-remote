@@ -139,6 +139,8 @@ export interface ZenRemoteStateFile {
     version: 1;
     serverId?: string;
     sessions?: Record<string, PersistedShareRow>;
+    /** Sessions whose initial remote share has already been issued. */
+    conversationShares?: string[];
     servers?: PairedServerRecord[];
     /** PG-2: the peer halves' three blocks — identity, network membership,
      * TOFU anchors. `version` stays 1: readers of the older layout see a file

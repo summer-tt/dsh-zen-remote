@@ -758,3 +758,24 @@ test('PB-25a: the fields form cannot ride a stream route either', () => {
     /rewriteIds.*stream|stream.*rewriteIds/,
   )
 })
+
+test('Host locating is reserved for exact server-scope T3 favorites', () => {
+  const route = {
+    path: '/api/t3-model-picker/favorites', scope: 'server', locator: { in: 'host' }, methods: ['GET'],
+  }
+  const setRoute = { ...route, path: `${route.path}/set`, methods: ['POST'], maxBody: 4096 }
+  const declaration = { plugin: 'dsh-t3-model-picker', version: 'test', routes: [route, setRoute] }
+  const normalized = normalizeDeclaration(declaration)
+  assert.deepEqual(normalized.routes.map(routeLocatorOf), [{ in: 'host' }, { in: 'host' }])
+  assert.throws(() => normalizeDeclaration({ ...declaration, routes: [{ ...setRoute, methods: ['GET'] }] }))
+  assert.throws(() => normalizeDeclaration({ ...declaration, routes: [{ ...setRoute, methods: ['GET', 'POST'] }] }))
+  assert.throws(() => normalizeDeclaration({ ...declaration, plugin: 'different-plugin' }), /host-owned prefix/)
+  for (const patch of [
+    { path: '/api/settings' }, { path: '/arbitrary' }, { scope: 'session' }, { prefix: true },
+    { stream: true }, { methods: ['DELETE'] }, { methods: ['POST'] }, { methods: ['GET', 'POST'] },
+    { upgrade: true }, { locator: { in: 'host', name: 'other' } },
+    { locator: { in: 'query', name: 'sessionId' } }, { sessionParam: 'sessionId' }, { rewriteIds: true },
+  ]) {
+    assert.throws(() => normalizeDeclaration({ ...declaration, routes: [{ ...route, ...patch }] }))
+  }
+})

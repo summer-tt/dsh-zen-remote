@@ -15,6 +15,7 @@
 const { test } = require('node:test')
 const assert = require('node:assert/strict')
 const http = require('node:http')
+const { Readable } = require('node:stream')
 const { createPluginLoopback, LoopbackAuthError } = require('../lib/plugin-loopback.js')
 const { waitFor } = require('./helpers/plugin-bridge-harness.cjs')
 
@@ -144,6 +145,25 @@ test('a stale cookie triggers exactly ONE re-exchange and a retry', async () => 
   } finally {
     await dsh.stop()
   }
+})
+
+test('a rejected POST evicts its cached cookie for the next explicit write', async (t) => {
+  const dsh = await startFakeDsh()
+  t.after(() => dsh.stop())
+  const loopback = createPluginLoopback({ getTarget: dsh.target, getTokenUrl: dsh.tokenUrl })
+  const write = async () => {
+    const response = await loopback.request('POST', '/panel/data', '', { contentType: 'application/json' }, Readable.from('{}'), new AbortController().signal)
+    for await (const _chunk of response.stream) { /* Drain the answer. */ }
+    return response.status
+  }
+  assert.equal(await write(), 200)
+  dsh.state.validCookie = 'dsh-auth=rotated'
+  dsh.state.routeCookie = 'dsh-auth=rotated'
+  assert.equal(await write(), 401)
+  assert.equal(dsh.state.pluginHits, 2, 'a rejected write is never replayed')
+  assert.equal(await write(), 200)
+  assert.equal(dsh.state.tokenHits, 2)
+  assert.equal(dsh.state.pluginHits, 3)
 })
 
 test('a 401 that survives the fresh cookie is returned verbatim, never an error', async () => {

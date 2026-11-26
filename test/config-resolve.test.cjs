@@ -486,7 +486,7 @@ test('every Config field carries the volatile marker; deviceToken keeps its secr
   // The settings surface exists ONLY for volatile fields (dsh-settings'
   // volatileForm drops the rest), so a single non-volatile field would go
   // dark in the settings page — assert the whole dict.
-  const expected = [...Object.keys(DEFAULTS), 'serverUrl', 'deviceToken', 'turnFoldDesktop', 'keyboardLiftRatio', 'keyboardLiftMaxPx', 'keyboardSafetyPadPx', 'maxUploadBytes']
+  const expected = [...Object.keys(DEFAULTS), 'serverUrl', 'deviceToken', 'turnFoldDesktop', 'keyboardLiftRatio', 'keyboardLiftMaxPx', 'keyboardSafetyPadPx', 'maxUploadBytes', 'recentConversationHost']
   assert.deepEqual(Object.keys(Config.dict).sort(), expected.sort(), 'the schema declares exactly the known fields')
   for (const [name, schema] of Object.entries(Config.dict)) {
     assert.equal(schema.meta?.volatile, true, `Config.${name} must be volatile`)

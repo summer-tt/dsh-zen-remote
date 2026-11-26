@@ -9,6 +9,7 @@ const { pathToFileURL } = require('node:url')
 const { request } = require('./util.cjs')
 const { RelayError, relayCredentialsDigest } = require('../lib/relay-client.js')
 const { toVirtual } = require('../lib/virtual-id.js')
+const { createBridgeRegistry, T3_FAVORITES_PATH, T3_FAVORITES_PLUGIN, T3_FAVORITES_SET_PATH } = require('../lib/plugin-bridge.js')
 const {
   sendJson,
   closeServer,
@@ -2343,3 +2344,125 @@ test('MS-5 network-hint pool mode: one probe-and-restore sweep answers the hint'
   }
 })
 
+test('session-hosts lists local and known paired identities without relay coordinates', async (t) => {
+  const entries = [
+    makeEntry('e1', 'abcd1234', 'http://10.0.0.1:3080', 'A'),
+    makeEntry('e2', 'ffffffff', 'http://10.0.0.2:3080', 'B', { state: 'offline' }),
+    makeEntry('e3', undefined, 'http://10.0.0.3:3080', '', { state: 'connecting' }),
+  ]
+  entries[0].client.handshakeInfo.supportsCreateDraft = true
+  const { server, port } = await startClientServer(makeRow(), { pool: fakePool(entries) })
+  t.after(() => closeServer(server))
+  const registered = routes.CLIENT_SESSION_HOSTS_ROUTE
+  const res = await request(port, { path: registered })
+  assert.deepEqual(JSON.parse(res.body), { ok: true, value: [
+    { hostId: 'local', displayName: '本机', state: 'online' },
+    { hostId: 'abcd1234', displayName: 'A', state: 'online', supportsCreateDraft: true },
+    { hostId: 'ffffffff', displayName: 'B', state: 'offline' },
+  ] })
+  const forwarded = await request(port, { path: registered, headers: { 'x-zen-remote-via': 'gateway' } })
+  assert.equal(forwarded.status, 403)
+  const hostOnly = await startClientServer(makeRow(), { remoteStatusOnly: true })
+  t.after(() => closeServer(hostOnly.server))
+  assert.deepEqual(JSON.parse((await request(hostOnly.port, { path: registered })).body).value.map((host) => host.hostId), ['local'])
+  const blocked = await startClientServer(makeRow(), { admit: () => ({ rejection: 401 }) })
+  t.after(() => closeServer(blocked.server))
+  assert.equal((await request(blocked.port, { path: registered })).status, 401)
+})
+
+test('session-host scopes reads and original-provider model selection to one paired Host', async (t) => {
+  const catalog = (model) => ({
+    default: { provider: 'magpie', model },
+    routableProviders: ['magpie'],
+    groups: [{ id: 'magpie', name: 'Magpie', models: [{ id: model, name: model }] }],
+    failures: [],
+  })
+  const calls = []
+  const relay = (id) => async (namespace, method, args) => {
+    calls.push({ id, namespace, method, args })
+    if (args.request?.sessionId === 'unshared') throw new RelayError('not-shared', '', 403)
+    return method === 'selectModel' ? { selected: { provider: args.request.provider, model: args.request.model, reasoningEffort: args.request.reasoningEffort } } : catalog(id)
+  }
+  const a = makeEntry('e1', 'abcd1234', gwUrl, 'A', { invoke: relay('a') })
+  const b = makeEntry('e2', 'ffffffff', gwUrl, 'B', { invoke: relay('b') })
+  const { server, port } = await startClientServer(makeRow(), { pool: fakePool([a, b]) })
+  t.after(() => closeServer(server))
+  const call = async (body, headers = sameOrigin(port)) => {
+    const res = await request(port, { method: 'POST', path: routes.CLIENT_SESSION_HOST_ROUTE, headers, body })
+    return JSON.parse(res.body)
+  }
+  assert.deepEqual(await call({ operation: 'modelCatalog', hostId: 'ffffffff' }), { ok: true, value: catalog('b') })
+  const sessionId = toVirtual('abcd1234', 'shared')
+  assert.deepEqual(await call({ operation: 'modelCatalog', sessionId }), { ok: true, value: catalog('a') })
+  const input = { operation: 'selectModel', sessionId, provider: 'magpie', model: 'a', reasoningEffort: 'high' }
+  const selected = { sessionId: 'shared', provider: 'magpie', model: 'a', reasoningEffort: 'high' }
+  assert.deepEqual(await call(input), { ok: true, value: { selected: { provider: 'magpie', model: 'a', reasoningEffort: 'high' } } })
+  assert.deepEqual(calls, [
+    { id: 'b', namespace: 'session', method: 'modelCatalog', args: {} },
+    { id: 'a', namespace: 'session', method: 'modelCatalogForSession', args: { request: { sessionId: 'shared' } } },
+    { id: 'a', namespace: 'session', method: 'selectModel', args: { request: selected } },
+  ])
+  assert.equal((await call({ ...input, sessionId: toVirtual('abcd1234', 'unshared') })).error.code, 'not-shared')
+  const before = calls.length
+  assert.equal((await call({ ...input, hostId: 'ffffffff' })).error.code, 'bad-request')
+  assert.equal((await call({ ...input, sessionId: 'shared' })).error.code, 'not-virtual')
+  assert.equal((await call({ ...input, provider: toVirtual('abcd1234', 'magpie') })).error.code, 'bad-request')
+  assert.equal((await call({ ...input, request: { sessionId: 'decoy' } })).error.code, 'bad-request')
+  assert.equal((await call({ operation: 'settings/editConfig', hostId: 'abcd1234' })).error.code, 'bad-operation')
+  assert.equal((await call({ ...input, sessionId: toVirtual('11111111', 'shared') })).error.code, 'remote-unpaired')
+  assert.equal((await call(input, { 'sec-fetch-site': 'cross-site' })).error.code, 'origin-rejected')
+  b.client.handshakeInfo.serverId = '44444444'
+  assert.equal((await call({ operation: 'modelCatalog', hostId: 'ffffffff' })).error.code, 'remote-mismatch')
+  b.client.state = 'offline'
+  assert.equal((await call({ operation: 'modelCatalog', hostId: 'ffffffff' })).error.code, 'remote-offline')
+  assert.equal(calls.length, before)
+})
+
+test('session-host favorites forward only the exact registered operation and keep refusals visible', async (t) => {
+  const registry = createBridgeRegistry()
+  const dispose = registry.register({ plugin: T3_FAVORITES_PLUGIN, version: 'test', routes: [
+    { path: T3_FAVORITES_PATH, scope: 'server', locator: { in: 'host' }, methods: ['GET'] },
+    { path: T3_FAVORITES_SET_PATH, scope: 'server', locator: { in: 'host' }, methods: ['POST'], maxBody: 4096 },
+  ] })
+  const { version, digest } = registry.get(T3_FAVORITES_PLUGIN)
+  const calls = []
+  const value = { favorites: [{ provider: 'magpie', model: 'test' }] }
+  let liveConsent = true
+  const entry = makeEntry('e1', 'abcd1234', gwUrl, 'A', { pluginRequest: async ({ body, ...coords }) => {
+    calls.push({ ...coords, body: body === undefined ? undefined : await new Response(body).json() })
+    if (!liveConsent) return Response.json({ ok: false, error: { code: 'consent-off' } }, { status: 403 })
+    return Response.json({ ok: true, value })
+  } })
+  const remoteDeclaration = { version, digest, serverScopeConsent: true }
+  entry.client.handshakeInfo.plugins = { [T3_FAVORITES_PLUGIN]: remoteDeclaration }
+  const { server, port } = await startClientServer(makeRow(), { pool: fakePool([entry]), bridgeRegistry: registry })
+  t.after(() => closeServer(server))
+  const call = async (body) => JSON.parse((await request(port, {
+    method: 'POST', path: routes.CLIENT_SESSION_HOST_ROUTE, headers: sameOrigin(port), body,
+  })).body)
+  const get = { operation: 'getFavorites', hostId: 'abcd1234' }
+  const favorite = { provider: 'magpie', model: 'test', favorite: true }
+  assert.deepEqual(await call(get), { ok: true, value })
+  assert.deepEqual(await call({ operation: 'setFavorite', sessionId: toVirtual('abcd1234', 'shared'), ...favorite }), { ok: true, value })
+  const coords = { plugin: T3_FAVORITES_PLUGIN, version, digest }
+  assert.deepEqual(calls, [
+    { ...coords, path: T3_FAVORITES_PATH, query: '', method: 'GET', body: undefined },
+    { ...coords, path: T3_FAVORITES_SET_PATH, query: 'sessionId=shared', method: 'POST', body: favorite, contentType: 'application/json', contentLength: Buffer.byteLength(JSON.stringify(favorite)) },
+  ])
+  assert.equal((await call({ ...get, path: '/api/settings' })).error.code, 'bad-request')
+  liveConsent = false
+  assert.equal((await call(get)).error.code, 'consent-off')
+  liveConsent = true
+  remoteDeclaration.serverScopeConsent = false
+  assert.deepEqual(await call(get), { ok: true, value }, 'stale handshake consent cannot block a retry')
+  remoteDeclaration.version = 'other'
+  assert.equal((await call(get)).error.code, 'version-mismatch')
+  remoteDeclaration.version = version
+  remoteDeclaration.digest = '0'.repeat(16)
+  assert.equal((await call(get)).error.code, 'declaration-mismatch')
+  entry.client.handshakeInfo.plugins = {}
+  assert.equal((await call(get)).error.code, 'not-on-server')
+  dispose()
+  assert.equal((await call(get)).error.code, 'plugin-not-local')
+  assert.equal(calls.length, 4)
+})

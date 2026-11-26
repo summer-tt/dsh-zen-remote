@@ -60,8 +60,9 @@ export type BridgeRewriteIds = true | BridgeRewriteFields;
  * counts segments AFTER the declared path (a `prefix` route's variable
  * part); `json-body` names TOP-LEVEL fields of the parsed JSON request
  * body. A route without a locator keeps the 2.1 behavior: the session id
- * rides the query parameter named `sessionParam`. */
-export type BridgeLocator = {
+ * rides the query parameter named `sessionParam`. `host` is available only
+ * to the exact T3 favorites routes through the explicit client Host API. */
+export type SessionBridgeLocator = {
     in: 'query';
     name: string;
 } | {
@@ -71,6 +72,21 @@ export type BridgeLocator = {
     in: 'json-body';
     fields: string[];
 };
+export type BridgeLocator = SessionBridgeLocator | {
+    in: 'host';
+};
+export declare const T3_FAVORITES_PLUGIN = "dsh-t3-model-picker";
+export declare const T3_FAVORITES_PATH = "/api/t3-model-picker/favorites";
+export declare const T3_FAVORITES_SET_PATH = "/api/t3-model-picker/favorites/set";
+export declare const T3_FAVORITES_MAX_BODY_BYTES = 4096;
+export declare function isT3FavoritesPath(path: string): boolean;
+export declare function isT3FavoritesBridge(plugin: string, route: NormalizedBridgeRoute): boolean;
+export interface FavoriteUpdate {
+    provider: string;
+    model: string;
+    favorite: boolean;
+}
+export declare function parseFavoriteUpdate(value: unknown): FavoriteUpdate | undefined;
 /** One forwardable route as a plugin declares it. `sessionParam` names the
  * URL query parameter carrying the session id (default `'sessionId'`);
  * `stream` marks routes answered as an event stream rather than one JSON
@@ -147,6 +163,7 @@ export declare function routeMaxBodyOf(route: NormalizedBridgeRoute): number;
  * declared none keeps the 2.1 convention: the session id rides the query
  * parameter named by `sessionParam`. */
 export declare function routeLocatorOf(route: NormalizedBridgeRoute): BridgeLocator;
+export declare function routeSessionLocatorOf(route: NormalizedBridgeRoute): SessionBridgeLocator | undefined;
 /** The effective prefix mark of one normalized route: does the route admit
  * its variable path tail (sub-paths under `path`)? */
 export declare function routePrefixOf(route: NormalizedBridgeRoute): boolean;
@@ -195,6 +212,7 @@ export declare function normalizeDeclaration(input: unknown): NormalizedDeclarat
  * conditional code. Exported as a TYPE only — no Context augmentation, so
  * nothing here leaks into compositions without this plugin. */
 export interface ZenRemoteService {
+    readonly supportsHostLocator: true;
     /** Register this process's bridge declaration. Throws on an illegal
      * declaration (nothing is registered); on success returns the dispose that
      * removes exactly this registration. */

@@ -914,3 +914,57 @@ test('Task 3: v1/plugin slices >64 KiB chunks and renews endDrainTimeoutMs on dr
   }
   assert.equal(stalledDestroyed, true, 'stalled client must still be destroyed by endDrainTimeoutMs watchdog')
 })
+
+test('T3 favorites require matching declaration, pairing, consent and any specified shared session', async (t) => {
+  const plugin = 'dsh-t3-model-picker'
+  const zrPath = '/api/t3-model-picker/favorites'
+  const setPath = `${zrPath}/set`
+  const input = { plugin, version: 'test', routes: [
+    { path: zrPath, scope: 'server', locator: { in: 'host' }, methods: ['GET'] },
+    { path: setPath, scope: 'server', locator: { in: 'host' }, methods: ['POST'], maxBody: 4096 },
+  ] }
+  const registry = createBridgeRegistry()
+  registry.register(input)
+  const { version, digest } = registry.get(plugin)
+  const wiring = await makeWiring('t3-favorites', { registryOverride: registry, withTunnel: true })
+  t.after(() => wiring.stop())
+  const call = (extra = {}) => wiring.pluginFetch(ROUTE, { plugin, zrPath, version, digest, query: '', ...extra })
+  const expect = async (extra, status, code) => {
+    const res = await call(extra)
+    assert.equal(res.status, status)
+    assert.equal((await res.json()).error.code, code)
+  }
+  await expect({}, 403, 'consent-off')
+  wiring.consentBox.map = { [plugin]: true }
+  await expect({ device: '' }, 401, 'relay-unauthorized')
+  await expect({ digest: '0'.repeat(16) }, 409, 'plugin-mismatch')
+  await expect({ version: 'other' }, 409, 'plugin-mismatch')
+  await expect({ zrPath: `${zrPath}/more` }, 404, 'route-undeclared')
+  await expect({ headers: { 'x-zr-method': 'DELETE' } }, 405, 'method-undeclared')
+  await expect({ query: 'sessionId=session-shared&other=1' }, 400, 'bad-query')
+  await expect({ query: 'sessionId=session-shared&sessionId=session-shared' }, 400, 'bad-query')
+  await expect({ query: 'sessionId=session-unshared' }, 403, 'not-shared')
+  const headers = { 'x-zr-method': 'POST', 'content-type': 'application/json' }
+  const favorite = { provider: 'magpie', model: 'foo', favorite: true }
+  await expect({ zrPath: setPath }, 405, 'method-undeclared')
+  await expect({ headers, body: JSON.stringify(favorite) }, 405, 'method-undeclared')
+  await expect({ zrPath: setPath, headers, body: JSON.stringify({ ...favorite, pathname: '/api/settings' }) }, 400, 'bad-request')
+  await expect({ zrPath: setPath, headers, body: JSON.stringify({ ...favorite, model: 'x'.repeat(4096) }) }, 413, 'body-too-large')
+  assert.equal(wiring.pluginServer.state.requests.length, 0)
+  for (const query of ['', 'sessionId=session-shared']) {
+    const res = await call({ query })
+    assert.equal(res.status, 200)
+    assert.deepEqual(await res.json(), { panel: true, path: zrPath, query: '' })
+  }
+  const res = await call({ zrPath: setPath, query: 'sessionId=session-shared', headers, body: JSON.stringify(favorite) })
+  assert.equal(res.status, 200)
+  assert.deepEqual(await res.json(), { panel: true, path: setPath, query: '' })
+  const requests = wiring.pluginServer.state.requests
+  const authenticated = requests.filter(({ cookie }) => cookie === 'dsh-auth=ok')
+  assert.deepEqual(authenticated.map(({ method, url }) => [method, url]), [['GET', zrPath], ['GET', zrPath], ['POST', setPath]])
+  assert.deepEqual(JSON.parse(authenticated[2].body), favorite)
+  const beforeRefusal = requests.length
+  wiring.consentBox.map = {}
+  await expect({ zrPath: setPath, headers, body: JSON.stringify(favorite) }, 403, 'consent-off')
+  assert.equal(requests.length, beforeRefusal)
+})

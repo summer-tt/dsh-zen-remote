@@ -229,6 +229,8 @@ export interface RelayHandshake {
   serverName: string
   dshVersion: string
   fingerprints: Record<string, string>
+  /** The target can create a Session and accept the initial message in one operation. */
+  supportsCreateDraft?: true
   /**
    * The SERVER's record of THIS device's name (T59) — what the pairing
    * registered and renames have since made of it. `undefined` from an older
@@ -1641,6 +1643,7 @@ export function createRelayClient(options: CreateRelayClientOptions): RelayClien
         serverName: typeof payload.serverName === 'string' ? payload.serverName : '',
         dshVersion: typeof payload.dshVersion === 'string' ? payload.dshVersion : '',
         fingerprints: isRecord(payload.fingerprints) ? (payload.fingerprints as Record<string, string>) : {},
+        ...(payload.supportsCreateDraft === true ? { supportsCreateDraft: true } : {}),
         // T59: the gateway's record of THIS device's name, when the server
         // speaks the field at all (an older server omits it and the client
         // keeps whatever it had).

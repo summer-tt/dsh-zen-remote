@@ -1,4 +1,5 @@
 import type { ClientContext, JobsLike, SessionId, WorkspaceId } from './compat/types.ts'
+import { mountNewConversation } from './new-conversation-wiring.tsx'
 import { isDesktopShell } from './compat/desktop.ts'
 import { MobileNavToggle } from './MobileNavToggle.tsx'
 import { MobileNavOverlay } from './MobileNavOverlay.tsx'
@@ -113,6 +114,7 @@ function activityInject(ctx: ClientContext) {
  * @param ctx - client root context.
  */
 export function apply(ctx: ClientContext): void {
+  const openNewConversation = mountNewConversation(ctx)
   // 2.0.0 设置页：必须在桌面门之前注册——桌面端 App 里手机外壳整体不生效，
   // 但设置页必须生效（主服务端就是桌面端）。字典、设置页样式与设置表单服务
   // 的按需注入都在 registerSettingsPage 里（那个服务名绝不进顶层的 inject
@@ -439,6 +441,7 @@ export function apply(ctx: ClientContext): void {
       // uiWorkspace 懒查：回调是用户点击才跑，服务那时必已注册（inject 不含
       // uiWorkspace，启动时可能先于它注册，不能启动查一次就用）。
       startSession: (workspaceId?: WorkspaceId) => {
+        if (openNewConversation?.(workspaceId) === true) return
         const ui = ctx.get('uiWorkspace') as UiWorkspaceLike | undefined
         if (ui === undefined) console.warn('[dsh-zen-remote] uiWorkspace service unavailable; cannot start a session')
         else ui.startSession(workspaceId)

@@ -82,7 +82,7 @@ export declare function validatePluginCall(bridge: {
     pluginDigest: string;
     routePath: string;
     rawQuery: string;
-}, isAccessible: (sessionId: string) => boolean, readJsonBody?: PluginCallBodyReader, device?: string): Promise<PluginCallValidation>;
+}, isAccessible: (sessionId: string) => boolean, readJsonBody?: PluginCallBodyReader, device?: string, httpMethod?: string): Promise<PluginCallValidation>;
 /** Largest single downstream data LINE (base64 will inflate by 4/3 — the cap
  * is on the RAW bytes carried, and the line stays well under typical proxy
  * line limits this way). */

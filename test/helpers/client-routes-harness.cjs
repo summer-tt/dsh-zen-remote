@@ -125,6 +125,7 @@ function createClientRoutesHarness() {
       ...(overrides.fetchImpl !== undefined ? { fetchImpl: overrides.fetchImpl } : {}),
       ...(overrides.getRelayClient !== undefined ? { getRelayClient: overrides.getRelayClient } : {}),
       ...(overrides.pool !== undefined ? { pool: overrides.pool } : {}),
+      ...(overrides.bridgeRegistry !== undefined ? { bridgeRegistry: overrides.bridgeRegistry } : {}),
       ...(overrides.probeTimeoutMs !== undefined ? { probeTimeoutMs: overrides.probeTimeoutMs } : {}),
       ...(overrides.getPluginBridgeStatusForServer !== undefined ? { getPluginBridgeStatusForServer: overrides.getPluginBridgeStatusForServer } : {}),
       ...(overrides.getIntercept !== undefined ? { getIntercept: overrides.getIntercept } : {}),

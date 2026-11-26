@@ -49,7 +49,8 @@ import {
 import type { PeerEngine, PeerEngineStatus } from './peer/engine.js'
 import type { PeerMemberPath, PeerMemberState } from './peer/engine.js'
 import { responseJson, sameOriginPost } from './http.js'
-import type { BridgeStatus } from './plugin-bridge.js'
+import { compareBridges, isT3FavoritesBridge, parseFavoriteUpdate, T3_FAVORITES_PATH, T3_FAVORITES_PLUGIN, T3_FAVORITES_SET_PATH } from './plugin-bridge.js'
+import type { BridgeRegistry, BridgeStatus, FavoriteUpdate } from './plugin-bridge.js'
 import { RELAY_HTTP_ROUTES } from './relay-access.js'
 import { relayCredentialsDigest, RelayError } from './relay-client.js'
 import type { RelayClient, RelayHttpResult } from './relay-client.js'
@@ -60,6 +61,16 @@ import { fromVirtual } from './virtual-id.js'
 
 /** Prefix all client routes live under (one webServer prefix registration). */
 export const CLIENT_ROUTE_PREFIX = '/_dsh/zen-remote/client'
+
+export const CLIENT_SESSION_HOSTS_ROUTE = `${CLIENT_ROUTE_PREFIX}/session-hosts`
+export const CLIENT_SESSION_HOST_ROUTE = `${CLIENT_ROUTE_PREFIX}/session-host`
+
+export interface SessionHostSummary {
+  hostId: string
+  displayName: string
+  state: RelayClient['state']
+  supportsCreateDraft?: true
+}
 
 /** POST `{serverUrl, code, name}`: redeem a desktop pairing code. */
 export const CLIENT_CLAIM_ROUTE = `${CLIENT_ROUTE_PREFIX}/claim`
@@ -220,6 +231,8 @@ export interface ClientHandlerOptions {
    * rendering). The single-`getRelayClient` form above stays exactly as it
    * was for the old wiring and the tests. */
   pool?: RelayPool
+  /** Live declaration registry for the explicit T3 favorites bridge. */
+  bridgeRegistry?: BridgeRegistry
   /** MS-5: the PB-2 bridge verdict for ONE pool entry, computed PER CALL off
    * that entry's own handshake table and connection state — per-server
    * isolation for the status / remote-status bodies. Undefined (old tests,
@@ -311,7 +324,7 @@ export type ClientHandler = (req: IncomingMessage, res: ServerResponse) => Promi
  * strip-only type stripping, which rejects that syntax (same reason as
  * UploadError in index.ts and AdminError in admin-routes.ts).
  */
-class ClientRouteError extends Error {
+export class ClientRouteError extends Error {
   readonly status: number
   readonly code: string
 
@@ -359,6 +372,118 @@ async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknow
 
 function stringOrEmpty(value: unknown): string {
   return typeof value === 'string' ? value : ''
+}
+
+export function requireSessionHostRelay(pool: RelayPool | undefined, hostId: string): RelayClient {
+  const entry = pool?.getByServerId(hostId)
+  if (entry === undefined) throw new ClientRouteError(404, 'remote-unpaired', 'The selected Host is not paired')
+  const relay = entry.client
+  if (relay.state === 'revoked' || relay.state === 'unpaired') {
+    throw new ClientRouteError(403, 'remote-unpaired', 'The selected Host is not paired')
+  }
+  if (relay.state === 'incompatible') {
+    throw new ClientRouteError(409, 'remote-incompatible', 'The selected Host speaks an incompatible relay protocol')
+  }
+  if (relay.state !== 'online') throw new ClientRouteError(503, 'remote-offline', 'The selected Host is offline')
+  // A mounted peer is keyed by its authenticated nodeId. Its independent
+  // DSH serverId is deliberately different from the virtual-session prefix.
+  if (pool?.isVirtual(entry.entryId) !== true && relay.handshakeInfo?.serverId !== hostId) {
+    throw new ClientRouteError(409, 'remote-mismatch', 'The connection belongs to a different Host')
+  }
+  return relay
+}
+
+export type SessionHostLocator = { hostId: string; sessionId?: never } | { hostId?: never; sessionId: string }
+
+export type SessionHostOperation =
+  | ({ operation: 'modelCatalog' | 'getFavorites' } & SessionHostLocator)
+  | ({ operation: 'setFavorite' } & SessionHostLocator & FavoriteUpdate)
+  | { operation: 'selectModel'; sessionId: string; provider: string; model: string; reasoningEffort?: string }
+
+async function requestFavorites(
+  relay: RelayClient,
+  registry: BridgeRegistry | undefined,
+  sessionId: string | undefined,
+  update: FavoriteUpdate | undefined,
+  signal: AbortSignal,
+): Promise<unknown> {
+  const declaration = registry?.get(T3_FAVORITES_PLUGIN)
+  if (declaration === undefined) throw new ClientRouteError(503, 'plugin-not-local', 'T3 favorites are unavailable on this Host')
+  const method = update === undefined ? 'GET' : 'POST'
+  const path = update === undefined ? T3_FAVORITES_PATH : T3_FAVORITES_SET_PATH
+  if (!declaration.routes.some((route) => route.path === path && isT3FavoritesBridge(declaration.plugin, route))) {
+    throw new ClientRouteError(503, 'route-undeclared', 'T3 favorites bridging is unavailable on this Host')
+  }
+  const [bridge] = compareBridges([declaration], relay.handshakeInfo?.plugins, true)
+  // Consent can change between handshakes. The target relay checks the
+  // live policy on every request, including a retry after consent is granted.
+  if (!bridge.bridged && bridge.reason !== 'consent-off') {
+    throw new ClientRouteError(409, bridge.reason ?? 'plugin-mismatch', 'T3 favorites bridging is unavailable on the selected Host')
+  }
+  const body = update === undefined ? undefined : JSON.stringify(update)
+  const response = await relay.pluginRequest({
+    plugin: declaration.plugin,
+    version: declaration.version,
+    digest: declaration.digest,
+    path,
+    query: sessionId === undefined ? '' : new URLSearchParams({ sessionId }).toString(),
+    method,
+    ...(body === undefined ? {} : {
+      body: new Response(body).body,
+      contentType: 'application/json',
+      contentLength: Buffer.byteLength(body),
+    }),
+  }, signal)
+  const result = await response.json().catch(() => undefined)
+  if (response.ok && result?.ok === true && Array.isArray(result.value?.favorites)) return result.value
+  const relayCode = response.headers.get('x-zen-remote-error')
+  const code = relayCode ?? (typeof result?.error?.code === 'string' ? result.error.code : undefined)
+  if (response.status === 401 && result?.reason === 'unpaired') {
+    throw new ClientRouteError(403, 'remote-unpaired', 'The selected Host is not paired')
+  }
+  throw new ClientRouteError(response.status >= 400 ? response.status : 502, code ?? 'invalid-favorites-response', 'The selected Host could not complete the T3 favorites operation')
+}
+
+async function invokeSessionHost(
+  options: ClientHandlerOptions,
+  body: Record<string, unknown>,
+  signal: AbortSignal,
+): Promise<unknown> {
+  const { operation, hostId, sessionId, ...input } = body
+  if (operation !== 'modelCatalog' && operation !== 'selectModel' && operation !== 'getFavorites' && operation !== 'setFavorite') {
+    throw new ClientRouteError(400, 'bad-operation', 'Unknown session Host operation')
+  }
+  const parts = sessionId === undefined ? undefined : fromVirtual(sessionId)
+  if (sessionId !== undefined && (parts === undefined || parts.id === '')) {
+    throw new ClientRouteError(400, 'not-virtual', 'sessionId must be a virtual session id')
+  }
+  if ((hostId !== undefined && parts !== undefined) || (operation === 'selectModel' && parts === undefined)) {
+    throw new ClientRouteError(400, 'bad-request', 'Specify exactly one target locator. Model selection requires sessionId')
+  }
+  const serverId = parts?.serverId ?? hostId
+  if (serverId === 'local') throw new ClientRouteError(400, 'local-host', 'Use the local DSH or T3 route for this Host')
+  if (typeof serverId !== 'string' || !/^[0-9a-f]{8}$/u.test(serverId)) {
+    throw new ClientRouteError(400, 'bad-request', 'hostId must be a remote serverId')
+  }
+  const relay = requireSessionHostRelay(options.pool, serverId)
+  if (operation === 'selectModel') {
+    const { provider, model, reasoningEffort, ...extra } = input
+    if (Object.keys(extra).length !== 0 || typeof provider !== 'string' || provider.trim() === '' || fromVirtual(provider) !== undefined ||
+      typeof model !== 'string' || model.trim() === '' || (reasoningEffort !== undefined && typeof reasoningEffort !== 'string')) {
+      throw new ClientRouteError(400, 'bad-request', 'Model selection requires an original provider, model and optional reasoningEffort')
+    }
+    return relay.invoke('session', 'selectModel', { request: { sessionId: parts?.id, provider, model, ...(reasoningEffort === undefined ? {} : { reasoningEffort }) } }, signal)
+  }
+  if (operation === 'setFavorite') {
+    const update = parseFavoriteUpdate(input)
+    if (update === undefined) throw new ClientRouteError(400, 'bad-request', 'Provide provider, model and favorite')
+    return requestFavorites(relay, options.bridgeRegistry, parts?.id, update, signal)
+  }
+  if (Object.keys(input).length !== 0) throw new ClientRouteError(400, 'bad-request', 'Unexpected operation fields')
+  if (operation === 'getFavorites') return requestFavorites(relay, options.bridgeRegistry, parts?.id, undefined, signal)
+  return parts === undefined
+    ? relay.invoke('session', 'modelCatalog', {}, signal)
+    : relay.invoke('session', 'modelCatalogForSession', { request: { sessionId: parts.id } }, signal)
 }
 
 /**
@@ -996,10 +1121,50 @@ export function createClientHandler(options: ClientHandlerOptions): ClientHandle
         })
         return
       }
-      // The host mount's least-exposure wall (T41a-fix2): remote-status and
-      // the debug report (CU-3, both roles answer their own) exist here,
-      // and both sit BEHIND the admission wall like every other route. The
-      // shape of the refusal matches the unknown-path fallthrough.
+      if (route === CLIENT_SESSION_HOSTS_ROUTE || route === CLIENT_SESSION_HOST_ROUTE) {
+        const list = route === CLIENT_SESSION_HOSTS_ROUTE
+        const expectedMethod = list ? 'GET' : 'POST'
+        if (method !== expectedMethod) {
+          res.setHeader('Allow', expectedMethod)
+          throw new ClientRouteError(405, 'method-not-allowed', `Use ${expectedMethod}`)
+        }
+        if (list) {
+          const hosts: SessionHostSummary[] = [{ hostId: 'local', displayName: resolveLang() === 'en' ? 'Local' : '本机', state: 'online' }]
+          for (const { serverId, serverName, displayName, client } of options.pool?.entries() ?? []) {
+            if (serverId === undefined || !/^[0-9a-f]{8}$/u.test(serverId)) continue
+            hosts.push({
+              hostId: serverId,
+              displayName: serverName ? displayName : serverId,
+              state: client.state,
+              ...(client.handshakeInfo?.supportsCreateDraft === true ? { supportsCreateDraft: true } : {}),
+            })
+          }
+          responseJson(res, 200, { ok: true, value: hosts })
+          return
+        }
+        if (!sameOriginPost(req)) {
+          throw new ClientRouteError(403, 'origin-rejected', 'The request must originate from this DSH Web application')
+        }
+        const controller = new AbortController()
+        const onClose = (): void => { if (!res.writableEnded) controller.abort() }
+        res.once('close', onClose)
+        try {
+          const value = await invokeSessionHost(options, await readJsonBody(req), AbortSignal.any([controller.signal, AbortSignal.timeout(30_000)]))
+          if (!res.destroyed) responseJson(res, 200, { ok: true, value: value ?? null })
+        } catch (error) {
+          if (res.destroyed) return
+          if (!(error instanceof RelayError)) throw error
+          const unpaired = error.code === 'unpaired' || error.code === 'revoked'
+          const code = unpaired ? 'remote-unpaired' : error.code === 'offline' ? 'remote-offline' : error.code
+          const status = unpaired ? 403 : error.code === 'offline' ? 503 : error.status ?? 502
+          responseJson(res, status, { ok: false, error: { code } })
+        } finally {
+          res.off('close', onClose)
+        }
+        return
+      }
+      // The remaining client management routes are unavailable on a pure
+      // host. Remote status and diagnostics are available in every role.
       if (options.remoteStatusOnly === true && route !== CLIENT_REMOTE_STATUS_ROUTE && route !== CLIENT_DEBUG_REPORT_ROUTE) {
         responseJson(res, 404, { ok: false, error: { code: 'not-found', message: 'Unknown client route' } })
         return

@@ -69,11 +69,45 @@ export type BridgeRewriteIds = true | BridgeRewriteFields
  * counts segments AFTER the declared path (a `prefix` route's variable
  * part); `json-body` names TOP-LEVEL fields of the parsed JSON request
  * body. A route without a locator keeps the 2.1 behavior: the session id
- * rides the query parameter named `sessionParam`. */
-export type BridgeLocator =
+ * rides the query parameter named `sessionParam`. `host` is available only
+ * to the exact T3 favorites routes through the explicit client Host API. */
+export type SessionBridgeLocator =
   | { in: 'query'; name: string }
   | { in: 'path-segment'; index: number }
   | { in: 'json-body'; fields: string[] }
+
+export type BridgeLocator = SessionBridgeLocator | { in: 'host' }
+
+export const T3_FAVORITES_PLUGIN = 'dsh-t3-model-picker'
+export const T3_FAVORITES_PATH = '/api/t3-model-picker/favorites'
+export const T3_FAVORITES_SET_PATH = '/api/t3-model-picker/favorites/set'
+export const T3_FAVORITES_MAX_BODY_BYTES = 4096
+
+export function isT3FavoritesPath(path: string): boolean {
+  return path === T3_FAVORITES_PATH || path === T3_FAVORITES_SET_PATH
+}
+
+export function isT3FavoritesBridge(plugin: string, route: NormalizedBridgeRoute): boolean {
+  if (plugin !== T3_FAVORITES_PLUGIN || !isT3FavoritesPath(route.path) ||
+    route.locator?.in !== 'host' || route.scope !== 'server' ||
+    route.prefix || route.stream || route.upgrade || route.deny || route.rewriteIds !== undefined) return false
+  const methods = routeMethodsOf(route)
+  return methods.length === 1 && methods[0] === (route.path === T3_FAVORITES_PATH ? 'GET' : 'POST')
+}
+
+export interface FavoriteUpdate {
+  provider: string
+  model: string
+  favorite: boolean
+}
+
+export function parseFavoriteUpdate(value: unknown): FavoriteUpdate | undefined {
+  if (!isPlainObject(value) || Object.keys(value).length !== 3) return undefined
+  const { provider, model, favorite } = value
+  if (typeof provider !== 'string' || provider.trim() === '' ||
+    typeof model !== 'string' || model.trim() === '' || typeof favorite !== 'boolean') return undefined
+  return { provider, model, favorite }
+}
 
 /** One forwardable route as a plugin declares it. `sessionParam` names the
  * URL query parameter carrying the session id (default `'sessionId'`);
@@ -164,6 +198,11 @@ export function routeMaxBodyOf(route: NormalizedBridgeRoute): number {
  * parameter named by `sessionParam`. */
 export function routeLocatorOf(route: NormalizedBridgeRoute): BridgeLocator {
   return route.locator ?? { in: 'query', name: route.sessionParam }
+}
+
+export function routeSessionLocatorOf(route: NormalizedBridgeRoute): SessionBridgeLocator | undefined {
+  const locator = routeLocatorOf(route)
+  return locator.in === 'host' ? undefined : locator
 }
 
 /** The effective prefix mark of one normalized route: does the route admit
@@ -280,7 +319,7 @@ export function normalizeDeclaration(input: unknown): NormalizedDeclaration {
     if (path.includes('#')) fail(`routes[${index}].path`, `"${path}" must not contain "#"`)
     if (path.includes('..')) fail(`routes[${index}].path`, `"${path}" must not contain ".."`)
     if (/\s/u.test(path)) fail(`routes[${index}].path`, `"${path}" must not contain whitespace`)
-    if (path.startsWith('/_dsh/') || path.startsWith('/api')) {
+    if (path.startsWith('/_dsh/') || (path.startsWith('/api') && !(plugin === T3_FAVORITES_PLUGIN && isT3FavoritesPath(path) && isPlainObject(locator) && locator.in === 'host'))) {
       fail(`routes[${index}].path`, `"${path}" starts with a host-owned prefix (/_dsh/ or /api) and cannot be bridged`)
     }
     if (scope !== 'session' && scope !== 'server') {
@@ -381,8 +420,10 @@ export function normalizeDeclaration(input: unknown): NormalizedDeclaration {
           fail(`routes[${index}].locator.fields`, 'must be a non-empty array of field names')
         }
         normalizedLocator = { in: 'json-body', fields: [...locator.fields] }
+      } else if (locator.in === 'host' && Object.keys(locator).length === 1) {
+        normalizedLocator = { in: 'host' }
       } else {
-        fail(`routes[${index}].locator.in`, 'must be "query", "path-segment" or "json-body"')
+        fail(`routes[${index}].locator.in`, 'must be "query", "path-segment", "json-body" or "host"')
       }
     }
     // PB-20: `deny` — the route must refuse a REMOTE session (its data is
@@ -431,7 +472,7 @@ export function normalizeDeclaration(input: unknown): NormalizedDeclaration {
     // normalized route ONLY when declared — an absent key, not an
     // `undefined` one, so the canonical form and the deep-equality shape of
     // 2.1-era routes stay byte-for-byte what they were.
-    return {
+    const result: NormalizedBridgeRoute = {
       path,
       scope,
       sessionParam: param,
@@ -444,6 +485,10 @@ export function normalizeDeclaration(input: unknown): NormalizedDeclaration {
       ...(normalizedDeny && { deny: normalizedDeny }),
       ...(normalizedRewriteIds && { rewriteIds: normalizedRewriteIds }),
     }
+    if (normalizedLocator?.in === 'host' && !isT3FavoritesBridge(plugin, result)) {
+      fail(`routes[${index}].locator`, 'host locating is reserved for the exact T3 favorites server-scope GET and POST endpoints')
+    }
+    return result
   })
   normalizedRoutes.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
 
@@ -483,6 +528,7 @@ export function normalizeDeclaration(input: unknown): NormalizedDeclaration {
  * conditional code. Exported as a TYPE only — no Context augmentation, so
  * nothing here leaks into compositions without this plugin. */
 export interface ZenRemoteService {
+  readonly supportsHostLocator: true
   /** Register this process's bridge declaration. Throws on an illegal
    * declaration (nothing is registered); on success returns the dispose that
    * removes exactly this registration. */

@@ -752,6 +752,10 @@ export function createAdminHandler(options: AdminHandlerOptions): AdminHandler {
           if (action === 'unshare-all') {
             for (const entry of store.list()) store.unshare(entry.sessionId, 'manual')
             sharesCoordinator.invalidateSummaryList()
+            if (store.list().length > 0) {
+              responseJson(res, 503, { ok: false, error: { code: 'share-write-failed' } })
+              return
+            }
             responseJson(res, 200, { ok: true })
             return
           }
@@ -784,6 +788,10 @@ export function createAdminHandler(options: AdminHandlerOptions): AdminHandler {
           }
           store.unshare(sessionId, 'manual')
           sharesCoordinator.invalidateSummaryList()
+          if (store.isShared(sessionId)) {
+            responseJson(res, 503, { ok: false, error: { code: 'share-write-failed' } })
+            return
+          }
           responseJson(res, 200, { ok: true })
           return
         }

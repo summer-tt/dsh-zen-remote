@@ -139,6 +139,10 @@ export interface RelayHandlerOptions {
     gateway: RelayGateway;
     /** Handshake facts. */
     serverInfo: RelayServerInfo;
+    /** Create and submit on behalf of an authenticated paired device. */
+    createWithFirstMessage?: (device: string, request: unknown, authorize: () => void) => Promise<{
+        sessionId: string;
+    }>;
     /** Ancestor lookup for subagent reachability; defaults to "no parent". */
     parentOf?: (id: string) => string | undefined;
     /** The host's `/api` shared-fetch dispatcher (T41b), probed lazily per

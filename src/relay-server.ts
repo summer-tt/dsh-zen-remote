@@ -35,6 +35,7 @@ import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { gzip } from 'node:zlib'
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { NewConversationError, isManagedConversation } from './new-conversation/index.js'
 import type { ShareStore } from './share-store.js'
 import { ensureServerIdMigrated, readStateFile, STATE_FILE_NAME, writeStateFile } from './state-store.js'
 import { decideHttpRoute, decideInvoke, decideStream, decideUploadQuery, parseEventResultBody } from './relay-access.js'
@@ -54,7 +55,7 @@ import {
 } from './relay-filter.js'
 import { SESSION_REFERENCE_URI, collectReferenceTexts, decodeSessionReferenceUri } from './session-reference.js'
 import type { ServerPluginEntry, BridgeRegistry } from './plugin-bridge.js'
-import { routeMethodsOf, routeMaxBodyOf } from './plugin-bridge.js'
+import { isT3FavoritesPath, routeMethodsOf, routeMaxBodyOf } from './plugin-bridge.js'
 import { createPluginTunnel, validatePluginCall, type PluginTunnelRoutes } from './plugin-tunnel.js'
 import type { PluginLoopback } from './plugin-loopback.js'
 import { isLoopbackAuthError } from './plugin-loopback.js'
@@ -280,6 +281,8 @@ export interface RelayHandlerOptions {
   gateway: RelayGateway
   /** Handshake facts. */
   serverInfo: RelayServerInfo
+  /** Create and submit on behalf of an authenticated paired device. */
+  createWithFirstMessage?: (device: string, request: unknown, authorize: () => void) => Promise<{ sessionId: string }>
   /** Ancestor lookup for subagent reachability; defaults to "no parent". */
   parentOf?: (id: string) => string | undefined
   /** The host's `/api` shared-fetch dispatcher (T41b), probed lazily per
@@ -1326,6 +1329,7 @@ interface EventsSubscription {
    * wire form) → the `agentId` each belongs to. Capped at
    * {@link EVENT_REGISTRY_LIMIT}, oldest dropped. */
   events: Map<string, string>
+  pendingShares: Map<string, ForwardableWaterfallFrame>
 }
 
 /**
@@ -1643,13 +1647,24 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
       return { type: 'ready' }
     }
     if (frame.type === 'waterfall') {
-      if (!isForwardableWaterfall(frame) || !isAccessible(frame.agentId)) return null
+      if (!isForwardableWaterfall(frame)) return null
+      if (!isAccessible(frame.agentId)) {
+        if (isManagedConversation(frame.agentId)) {
+          sub.pendingShares.set(frame.eventId, frame)
+          if (sub.pendingShares.size > EVENT_REGISTRY_LIMIT) {
+            const oldest = sub.pendingShares.keys().next().value
+            if (oldest !== undefined) sub.pendingShares.delete(oldest)
+          }
+        }
+        return null
+      }
       rememberEvent(sub, frame.eventId, frame.agentId)
       return { ...frame, eventId: `${sub.token}.${frame.eventId}` }
     }
     if (frame.type === 'cancel') {
-      if (!isForwardableCancel(frame) || !sub.events.has(frame.eventId)) return null
-      sub.events.delete(frame.eventId)
+      if (!isForwardableCancel(frame)) return null
+      sub.pendingShares.delete(frame.eventId)
+      if (!sub.events.delete(frame.eventId)) return null
       return { ...frame, eventId: `${sub.token}.${frame.eventId}` }
     }
     if (frame.type === 'emit') {
@@ -1729,6 +1744,7 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
         serverId: serverInfo.serverId,
         serverName: serverInfo.serverName(),
         dshVersion: serverInfo.dshVersion,
+        ...(options.createWithFirstMessage === undefined ? {} : { supportsCreateDraft: true }),
         // T42: the server's own interface fingerprints (empty when the wiring
         // had nothing to compute — the client judges group by group).
         fingerprints,
@@ -1760,7 +1776,10 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
         responseJson(res, 403, { ok: false, error: { code: 'not-shared' } })
         return
       }
-      store.unshare(sessionId, 'client')
+      if (!store.unshare(sessionId, 'client') && store.isShared(sessionId)) {
+        responseJson(res, 503, { ok: false, error: { code: 'share-write-failed' } })
+        return
+      }
       responseJson(res, 200, { ok: true })
       return
     }
@@ -1865,7 +1884,10 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
         responseJson(res, 400, { ok: false, error: { code: 'bad-request' } })
         return
       }
-      const decision = decideInvoke(namespace, method, args, isAccessible)
+      const isDraftSubmission = namespace === 'session' && method === 'createWithFirstMessage'
+      const decision = isDraftSubmission
+        ? { allow: true as const, filter: undefined }
+        : decideInvoke(namespace, method, args, isAccessible)
       if (!decision.allow) {
         responseJson(res, 403, { ok: false, error: { code: decision.reason } })
         return
@@ -1891,6 +1913,25 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
       }
       res.on('close', onClientGone)
       try {
+        if (isDraftSubmission) {
+          if (device === '' || options.createWithFirstMessage === undefined) {
+            responseJson(res, 403, { ok: false, error: { code: 'unsupported' } })
+            return
+          }
+          const request = (args as Record<string, unknown>).request
+          const references = isPlainObject(request) && typeof request.text === 'string'
+            ? referencedSessionIds('session', 'prompt', { request: { content: [{ type: 'text', text: request.text }] } })
+            : []
+          const authorize = () => {
+            if (hangUp.signal.aborted) throw new NewConversationError(409, 'submission-interrupted', 'The requesting connection closed')
+            if (references.some(id => !isAccessible(id))) throw new NewConversationError(403, 'not-shared', 'A referenced Session is no longer shared')
+            if (references.length > 0) throw new NewConversationError(409, 'references-require-session', 'Send Session references after creating the remote conversation')
+          }
+          authorize()
+          const value = await options.createWithFirstMessage(device, request, authorize)
+          responseJson(res, 200, { ok: true, value })
+          return
+        }
         // `job/kill` additionally proves the target job belongs to the
         // claimed session (4b): DSH opens ownerless jobs to everyone, so the
         // share-table check alone would let one shared session kill
@@ -1992,7 +2033,15 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
           responseJson(res, 403, { ok: false, error: { code: 'not-shared' } })
           return
         }
-        const value = await gateway.invoke(withPeer({ namespace, method, args, signal: hangUp.signal }, options.getPeer))
+        // Session-scoped catalog calls reach this point only after the share
+        // check. DSH's catalog itself takes no session argument.
+        const catalogForSession = namespace === 'session' && method === 'modelCatalogForSession'
+        const value = await gateway.invoke(withPeer({
+          namespace,
+          method: catalogForSession ? 'modelCatalog' : method,
+          args: catalogForSession ? {} : args,
+          signal: hangUp.signal,
+        }, options.getPeer))
         // T31: a session created or forked THROUGH the relay is shared
         // automatically — the client only ever sees shared sessions, so an
         // unshared result would be born unreachable. Re-sharing (a fork the
@@ -2064,7 +2113,11 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
         // The gateway's own failures (unknown namespace, absent service) are
         // business answers, not transport errors: they ride a 200 envelope
         // like every other result, with the gateway's string code preserved.
-        await responseCompressedJson(req, res, 200, errorEnvelopeOf(error))
+        if (isDraftSubmission && error instanceof NewConversationError) {
+          if (!res.destroyed) responseJson(res, error.status, { ok: false, error: { code: error.code } })
+        } else {
+          await responseCompressedJson(req, res, 200, errorEnvelopeOf(error))
+        }
       } finally {
         res.off('close', onClientGone)
         // The invoke is over — answered, refused mid-flight, or its client
@@ -2207,7 +2260,7 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
       // adapter (the plugin registered its own declaration) falls through to
       // the cooperative chain below, whose digest check refuses the stale
       // adapter coordinates with `plugin-mismatch`.
-      const adapterHit = matchAdapterRoute(options.pluginBridge?.adapters, routePath)
+      const adapterHit = isT3FavoritesPath(routePath) ? undefined : matchAdapterRoute(options.pluginBridge?.adapters, routePath)
       if (adapterHit !== undefined) {
         const { adapter, route: adapterRoute } = adapterHit
         if (adapterOwnsRegistryEntry(adapter, bridge.registry.get(adapter.plugin))) {
@@ -2484,7 +2537,8 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
             return { kind: 'corrupt' as const }
           }
         },
-        headerValue(req, 'x-zen-remote-device') ?? '',
+        gateDeviceId,
+        pluginMethod,
       )
       if (!validation.ok) {
         relayPluginError(res, validation.status, validation.code)
@@ -3338,7 +3392,7 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
         // binds them to THIS connection's pairing.
         const eventsSub: EventsSubscription | undefined =
           decision.events === true
-            ? { device, token: randomBytes(8).toString('hex'), clientId: undefined, events: new Map() }
+            ? { device, token: randomBytes(8).toString('hex'), clientId: undefined, events: new Map(), pendingShares: new Map() }
             : undefined
         if (eventsSub !== undefined) liveEventSubscriptions.add(eventsSub)
 
@@ -3482,10 +3536,19 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
           // away (T32-fix2, see filterEventsFrame's DROPPED DELIVERIES): it
           // stays pending at the gateway, still answerable by the server
           // UI or a future subscriber. Events of still-reachable sessions
-          // are untouched; nothing is synthesized on a share (the known
-          // limitation in filterEventsFrame's comment).
+          // are untouched. Flush the newly published conversation’s queued events.
           unsubscribe = store.subscribe((event) => {
-            if (event.type !== 'unshared' || finished || clientGone) return
+            if (finished || clientGone) return
+            if (event.type === 'shared') {
+              for (const [id, pending] of eventsSub.pendingShares) {
+                if (pending.agentId !== event.sessionId || !isAccessible(pending.agentId)) continue
+                eventsSub.pendingShares.delete(id)
+                rememberEvent(eventsSub, id, pending.agentId)
+                void writeLine({ type: 'frame', frame: { ...pending, eventId: `${eventsSub.token}.${id}` } })
+              }
+              return
+            }
+            if (event.type !== 'unshared') return
             for (const [eventId, agentId] of [...eventsSub.events]) {
               if (isAccessible(agentId)) continue
               eventsSub.events.delete(eventId)

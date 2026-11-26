@@ -30,11 +30,19 @@ import type { FetchRouteInterceptDiagnostics } from './fetch-route-intercept.js'
 import type { CurrentSessionRead, InterceptDiagnostics } from './intercept.js';
 import type { PluginRouteInterceptDiagnostics } from './plugin-route-intercept.js';
 import type { PeerEngine } from './peer/engine.js';
-import type { BridgeStatus } from './plugin-bridge.js';
+import type { BridgeRegistry, BridgeStatus, FavoriteUpdate } from './plugin-bridge.js';
 import type { RelayClient } from './relay-client.js';
 import type { RelayPool } from './relay-pool.js';
 /** Prefix all client routes live under (one webServer prefix registration). */
 export declare const CLIENT_ROUTE_PREFIX = "/_dsh/zen-remote/client";
+export declare const CLIENT_SESSION_HOSTS_ROUTE = "/_dsh/zen-remote/client/session-hosts";
+export declare const CLIENT_SESSION_HOST_ROUTE = "/_dsh/zen-remote/client/session-host";
+export interface SessionHostSummary {
+    hostId: string;
+    displayName: string;
+    state: RelayClient['state'];
+    supportsCreateDraft?: true;
+}
 /** POST `{serverUrl, code, name}`: redeem a desktop pairing code. */
 export declare const CLIENT_CLAIM_ROUTE = "/_dsh/zen-remote/client/claim";
 /** GET: the current connection state (never carries the token). */
@@ -161,6 +169,8 @@ export interface ClientHandlerOptions {
      * rendering). The single-`getRelayClient` form above stays exactly as it
      * was for the old wiring and the tests. */
     pool?: RelayPool;
+    /** Live declaration registry for the explicit T3 favorites bridge. */
+    bridgeRegistry?: BridgeRegistry;
     /** MS-5: the PB-2 bridge verdict for ONE pool entry, computed PER CALL off
      * that entry's own handshake table and connection state — per-server
      * isolation for the status / remote-status bodies. Undefined (old tests,
@@ -241,6 +251,39 @@ export interface ClientHandlerOptions {
     getPeerNetworkOrigin?: () => string | undefined;
 }
 export type ClientHandler = (req: IncomingMessage, res: ServerResponse) => Promise<void>;
+/**
+ * One refusal this module raises on purpose, carrying the status and code the
+ * browser should see.
+ *
+ * Fields are assigned in the body rather than declared as constructor
+ * parameter properties: check scripts import these modules through Node's
+ * strip-only type stripping, which rejects that syntax (same reason as
+ * UploadError in index.ts and AdminError in admin-routes.ts).
+ */
+export declare class ClientRouteError extends Error {
+    readonly status: number;
+    readonly code: string;
+    constructor(status: number, code: string, message: string);
+}
+export declare function requireSessionHostRelay(pool: RelayPool | undefined, hostId: string): RelayClient;
+export type SessionHostLocator = {
+    hostId: string;
+    sessionId?: never;
+} | {
+    hostId?: never;
+    sessionId: string;
+};
+export type SessionHostOperation = ({
+    operation: 'modelCatalog' | 'getFavorites';
+} & SessionHostLocator) | ({
+    operation: 'setFavorite';
+} & SessionHostLocator & FavoriteUpdate) | {
+    operation: 'selectModel';
+    sessionId: string;
+    provider: string;
+    model: string;
+    reasoningEffort?: string;
+};
 /**
  * Build the client route handler for one plugin row. The returned handler
  * owns the full response lifecycle of every request under
