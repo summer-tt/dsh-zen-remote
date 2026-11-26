@@ -354,8 +354,9 @@ export class DraftTarget implements DraftTargetController {
     const current = this.current
     // Re-selecting the Host already targeted with no Workspace is the same
     // target, whoever chose it first; it must not re-key the draft.
-    if (current.hostId === hostId && current.workspaceId === undefined) return
     this.origin = 'user'
+    if (current.phase === 'resolving') ++this.readToken
+    if (current.phase === 'ready' && current.hostId === hostId && current.workspaceId === undefined) return
     this.move({ hostId, workspaceId: undefined }, { hostChanged: current.hostId !== hostId, reason: undefined })
   }
 

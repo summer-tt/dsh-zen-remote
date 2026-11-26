@@ -111,6 +111,8 @@ export interface NewConversationCopy {
  * never imports another plugin's component.
  */
 export interface NewConversationView {
+    readonly mainSessionId?: string | undefined;
+    readonly returnSessionId?: string | undefined;
     readonly target: DraftTargetState;
     readonly directory: HostDirectorySnapshot;
     /** Why the roster failed, when it did; shown with the retry action. */
@@ -161,6 +163,7 @@ export type UseNewConversationView = <S>(selector: (view: NewConversationView) =
 export interface NewConversationPanelActions {
     readonly onSelectHost: (hostId: HostId) => void;
     readonly onOpenHostDraft?: (hostId: HostId) => void;
+    readonly onReturnToSession?: () => void;
     readonly onSelectWorkspace: (workspaceId: WorkspaceId) => void;
     readonly onSelectPreset?: (id: string) => void;
     readonly onTextChange: (text: string) => void;

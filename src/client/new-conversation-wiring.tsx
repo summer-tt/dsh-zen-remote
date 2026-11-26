@@ -1,7 +1,7 @@
 import { createElement, type ComponentType } from 'react'
-import type { ClientContext, SessionId } from './compat/types.ts'
+import { mainSessionIdOf, type ClientContext, type SessionId } from './compat/types.ts'
 import { fromVirtual } from '../virtual-id.js'
-import { DraftTarget, draftKey, type HostDirectorySnapshot, type HostId, type Source } from './new-conversation/target.ts'
+import { DraftTarget, draftKey, hostSelectable, type HostDirectorySnapshot, type HostId, type Source } from './new-conversation/target.ts'
 import { browserDraftStorage, createDraftStore } from './new-conversation/draft-store.ts'
 import { NativeDraftComposer, NativeDraftTarget, NewConversationPanel, type ModelSelection, type NewConversationView, type SubmitInput } from './new-conversation/NewConversationPanel.tsx'
 import { NewConversationTrigger } from './new-conversation/NewConversationTrigger.tsx'
@@ -104,6 +104,8 @@ export function mountNewConversation(ctx: ClientContext): ((workspaceId?: string
   const navigation = typeof workspace?.registerNewSessionDraft === 'function' && typeof workspace.openSessionDraft === 'function'
     ? workspace as NativeDraftNavigation : undefined
   let draftNavigation: AbortSignal | undefined
+  let returnSessionId: SessionId | undefined
+  const mainSession = () => mainSessionIdOf(ctx.sessions.list.getSnapshot().byId)
   const isOpen = () => navigation === undefined
     ? ctx.layout.panelInfo.getSnapshot().activePanelId === NEW_CONVERSATION_PANEL_ID
     : draftNavigation?.aborted === false
@@ -177,6 +179,7 @@ export function mountNewConversation(ctx: ClientContext): ((workspaceId?: string
       workspaces, presets, agentPreset: chosenPreset ?? presetRows.find(row => row.isDefault)?.id,
       text: drafts.read(state.hostId, state.workspaceId), selection: model(), modelPicker: pickerNode,
       copy: { ...words, hostOffline },
+      mainSessionId: mainSession(), returnSessionId,
       pendingSubmission: storage.getItem(pendingKey(state.hostId, state.workspaceId)) !== null }
   }
   const publish = () => { if (!disposed) { const current = snap(); view.set(current); label.set(current.copy.title) } }
@@ -335,7 +338,9 @@ export function mountNewConversation(ctx: ClientContext): ((workspaceId?: string
 
   function open(workspaceId?: string, hostId?: HostId): boolean {
     if (creationForbidden || (navigation === undefined && !enabled.getSnapshot())) return false
+    returnSessionId = hostId === undefined ? undefined : mainSession()
     if (hostId !== undefined) {
+      if (!hostSelectable(directory.getSnapshot(), hostId)) return false
       target.selectHost(hostId)
       if (target.state.getSnapshot().hostId !== hostId) return false
     } else if (workspaceId === undefined) target.resetToPreferredHost()
@@ -352,6 +357,7 @@ export function mountNewConversation(ctx: ClientContext): ((workspaceId?: string
       draftNavigation = signal
       signal.addEventListener('abort', () => active.set(false), { once: true })
       active.set(true)
+      publish()
       void reloadHosts(); void loadCatalog(); void loadFavorites(); void loadPresets()
     }
     return true
@@ -364,6 +370,11 @@ export function mountNewConversation(ctx: ClientContext): ((workspaceId?: string
     actions: {
     onSelectHost: hostId => target.selectHost(hostId),
     onOpenHostDraft: hostId => { open(undefined, hostId) },
+    onReturnToSession: () => {
+      const id = returnSessionId
+      returnSessionId = undefined
+      if (id !== undefined && isOpen()) workspace?.openSession(id)
+    },
     onSelectWorkspace: id => {
       const current = target.state.getSnapshot()
       if (current.workspaceId === undefined) drafts.adoptHostDraft(current.hostId, id)
@@ -414,17 +425,18 @@ export function mountNewConversation(ctx: ClientContext): ((workspaceId?: string
   })
   ctx.effect(() => {
     const stopTarget = target.state.subscribe(targetChanged)
+    const stopSessions = ctx.sessions.list.subscribe(publish)
     const stopWorkspaces = ctx.workspaces.list.subscribe(publish)
     const stopPanel = ctx.layout.panelInfo.subscribe(() => {
       if (navigation !== undefined || !isOpen()) return
       void reloadHosts(); void loadCatalog(); void loadFavorites(); void loadPresets()
     })
     const interval = window.setInterval(() => {
-      if (isOpen()) void reloadHosts()
+      if (isOpen() || (mainSession() !== undefined && directory.getSnapshot().phase === 'error')) void reloadHosts()
     }, 5000)
     void preference().then(() => { if (!disposed) enabled.set(true) }, () => {})
     void reloadHosts()
-    return () => { disposed = true; window.clearInterval(interval); stopTarget(); stopWorkspaces(); stopPanel(); stopDirectory(); target.dispose() }
+    return () => { disposed = true; window.clearInterval(interval); stopTarget(); stopSessions(); stopWorkspaces(); stopPanel(); stopDirectory(); target.dispose() }
   })
   return open
 }

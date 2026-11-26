@@ -118,6 +118,8 @@ export interface NewConversationCopy {
  * never imports another plugin's component.
  */
 export interface NewConversationView {
+  readonly mainSessionId?: string | undefined
+  readonly returnSessionId?: string | undefined
   readonly target: DraftTargetState
   readonly directory: HostDirectorySnapshot
   /** Why the roster failed, when it did; shown with the retry action. */
@@ -168,6 +170,7 @@ export type UseNewConversationView = <S>(selector: (view: NewConversationView) =
 export interface NewConversationPanelActions {
   readonly onSelectHost: (hostId: HostId) => void
   readonly onOpenHostDraft?: (hostId: HostId) => void
+  readonly onReturnToSession?: () => void
   readonly onSelectWorkspace: (workspaceId: WorkspaceId) => void
   readonly onSelectPreset?: (id: string) => void
   readonly onTextChange: (text: string) => void
@@ -322,7 +325,7 @@ function HostPicker({ copy, directory, hostId, onSelect }: {
 
 /** Host and workspace selection for the native hero row. */
 export function NewConversationTarget({ useView, actions, renderWorkspace }: NewConversationPanelProps & { renderWorkspace?: NativeWorkspaceControl }) {
-  const { target, directory, workspaces, presets, agentPreset, copy } = useView(state => state)
+  const { target, directory, workspaces, presets, agentPreset, copy, returnSessionId } = useView(state => state)
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false)
   const [presetMenuOpen, setPresetMenuOpen] = useState(false)
   const mode = copy.title === '新会话' ? '模式' : 'Mode'
@@ -334,6 +337,9 @@ export function NewConversationTarget({ useView, actions, renderWorkspace }: New
   return (
     <>
       <HostPicker copy={copy} directory={directory} hostId={target.hostId} onSelect={actions.onSelectHost} />
+      {returnSessionId !== undefined && <Button variant="outline" size="sm" onClick={actions.onReturnToSession}>
+        {copy.title === '新会话' ? '返回原会话' : 'Return to previous session'}
+      </Button>}
       {renderWorkspace !== undefined ? renderWorkspace({
         label: selectedWorkspace?.label,
         selectedId: selectedWorkspace?.displayId,
@@ -566,6 +572,7 @@ export function NewConversationComposer({ useView, actions }: NewConversationPan
 export function NativeDraftTarget({ useActive, draftAvailable, children, targetSessionId, renderNativeTarget, ...draft }: DraftSlotProps) {
   const directory = draft.useView(view => view.directory)
   const copy = draft.useView(view => view.copy)
+  const mainSessionId = draft.useView(view => view.mainSessionId)
   if (useActive(active => active && draftAvailable)) return <NewConversationTarget {...draft} />
   if (renderNativeTarget === undefined) return children
   const hostId = fromVirtual(targetSessionId ?? '')?.serverId ?? LOCAL_HOST
@@ -576,7 +583,7 @@ export function NativeDraftTarget({ useActive, draftAvailable, children, targetS
     return prefix !== undefined && label.startsWith(prefix) ? label.slice(prefix.length) : label
   })
   return <>
-    {targetSessionId !== undefined && draft.actions.onOpenHostDraft !== undefined && (
+    {targetSessionId !== undefined && targetSessionId === mainSessionId && draft.actions.onOpenHostDraft !== undefined && (
       <HostPicker copy={copy} directory={directory} hostId={hostId} onSelect={draft.actions.onOpenHostDraft} />
     )}
     {nativeTarget}
