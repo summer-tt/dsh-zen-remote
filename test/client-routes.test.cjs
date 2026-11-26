@@ -2370,6 +2370,30 @@ test('session-hosts lists local and known paired identities without relay coordi
   assert.equal((await request(blocked.port, { path: registered })).status, 401)
 })
 
+test('session-hosts renews a missing handshake before advertising draft support', async (t) => {
+  const entry = makeEntry('e1', 'abcd1234', gwUrl, 'A')
+  const handshake = { ...entry.client.handshakeInfo, supportsCreateDraft: true }
+  entry.client.handshakeInfo = undefined
+  let connects = 0
+  entry.client.connect = async () => { connects++ }
+  const { server, port } = await startClientServer(makeRow(), { pool: fakePool([entry]) })
+  t.after(() => closeServer(server))
+  const readHost = async () => JSON.parse((await request(port, { path: routes.CLIENT_SESSION_HOSTS_ROUTE })).body).value[1]
+  const readCatalog = () => request(port, {
+    method: 'POST', path: routes.CLIENT_SESSION_HOST_ROUTE, headers: sameOrigin(port),
+    body: { operation: 'modelCatalog', hostId: 'abcd1234' },
+  })
+  assert.deepEqual(await readHost(), { hostId: 'abcd1234', displayName: 'A', state: 'connecting' })
+  assert.equal(connects, 1)
+  const waiting = await readCatalog()
+  assert.equal(waiting.status, 503)
+  assert.equal(JSON.parse(waiting.body).error.code, 'remote-connecting')
+  entry.client.handshakeInfo = handshake
+  assert.deepEqual(await readHost(), { hostId: 'abcd1234', displayName: 'A', state: 'online', supportsCreateDraft: true })
+  entry.client.handshakeInfo = { ...handshake, serverId: 'ffffffff' }
+  assert.equal(JSON.parse((await readCatalog()).body).error.code, 'remote-mismatch')
+})
+
 test('session-host scopes reads and original-provider model selection to one paired Host', async (t) => {
   const catalog = (model) => ({
     default: { provider: 'magpie', model },

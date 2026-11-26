@@ -163,11 +163,16 @@ export function mountNewConversation(ctx: ClientContext): ((workspaceId?: string
     const roster = directory.getSnapshot()
     const host = hosts.find(row => row.hostId === state.hostId)
     const incompatible = host?.state === 'incompatible' || (host?.state === 'online' && host.supportsCreateDraft !== true)
+    const zh = words.title === '新会话'
+    const hostOffline = host?.state === 'connecting'
+      ? (zh ? '正在连接所选 Host' : 'Connecting to the selected Host')
+      : incompatible ? (zh ? '此 Host 的版本不支持新会话' : 'This Host version does not support new conversations')
+        : words.hostOffline
     const presets = presetRows.map(row => ({ id: row.id, label: row.name ?? modeNames[row.id]?.[words.title === '新会话' ? 0 : 1] ?? row.id }))
     return { target: state, directory: roster, directoryError: roster.phase === 'error' ? roster.message : undefined,
       workspaces, presets, agentPreset: chosenPreset ?? presetRows.find(row => row.isDefault)?.id,
       text: drafts.read(state.hostId, state.workspaceId), selection: model(), modelPicker: pickerNode,
-      copy: incompatible ? { ...words, hostOffline: words.title === '新会话' ? '此 Host 的版本不支持新会话' : 'This Host version does not support new conversations' } : words,
+      copy: { ...words, hostOffline },
       pendingSubmission: storage.getItem(pendingKey(state.hostId, state.workspaceId)) !== null }
   }
   const publish = () => { if (!disposed) { const current = snap(); view.set(current); label.set(current.copy.title) } }

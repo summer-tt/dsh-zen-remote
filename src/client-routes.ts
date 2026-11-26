@@ -387,8 +387,14 @@ export function requireSessionHostRelay(pool: RelayPool | undefined, hostId: str
   if (relay.state !== 'online') throw new ClientRouteError(503, 'remote-offline', 'The selected Host is offline')
   // A mounted peer is keyed by its authenticated nodeId. Its independent
   // DSH serverId is deliberately different from the virtual-session prefix.
-  if (pool?.isVirtual(entry.entryId) !== true && relay.handshakeInfo?.serverId !== hostId) {
-    throw new ClientRouteError(409, 'remote-mismatch', 'The connection belongs to a different Host')
+  if (pool?.isVirtual(entry.entryId) !== true) {
+    if (relay.handshakeInfo === undefined) {
+      void relay.connect().catch(() => {})
+      throw new ClientRouteError(503, 'remote-connecting', 'Waiting for the selected Host to complete its handshake')
+    }
+    if (relay.handshakeInfo.serverId !== hostId) {
+      throw new ClientRouteError(409, 'remote-mismatch', 'The connection belongs to a different Host')
+    }
   }
   return relay
 }
@@ -1130,12 +1136,15 @@ export function createClientHandler(options: ClientHandlerOptions): ClientHandle
         }
         if (list) {
           const hosts: SessionHostSummary[] = [{ hostId: 'local', displayName: resolveLang() === 'en' ? 'Local' : '本机', state: 'online' }]
-          for (const { serverId, serverName, displayName, client } of options.pool?.entries() ?? []) {
+          for (const { entryId, serverId, serverName, displayName, client } of options.pool?.entries() ?? []) {
             if (serverId === undefined || !/^[0-9a-f]{8}$/u.test(serverId)) continue
+            const awaitingHandshake = client.state === 'online' && client.handshakeInfo === undefined
+              && options.pool?.isVirtual(entryId) !== true
+            if (awaitingHandshake) void client.connect().catch(() => {})
             hosts.push({
               hostId: serverId,
               displayName: serverName ? displayName : serverId,
-              state: client.state,
+              state: awaitingHandshake ? 'connecting' : client.state,
               ...(client.handshakeInfo?.supportsCreateDraft === true ? { supportsCreateDraft: true } : {}),
             })
           }
