@@ -21,7 +21,7 @@
  * Node test can drive it with plain strings.
  */
 import { type ReactNode } from 'react';
-import type { DraftSlotProps, NativeWorkspaceControl } from './register.ts';
+import type { DraftSlotProps, NativeDraftPreset, NativeWorkspaceControl } from './register.ts';
 import { type DraftTargetState, type HostDirectorySnapshot, type HostId, type WorkspaceId } from './target.ts';
 /** The model a draft will start with, resolved by the user before the first send. */
 export interface ModelSelection {
@@ -121,6 +121,8 @@ export interface NewConversationView {
     readonly presets?: readonly {
         id: string;
         label: string;
+        name?: string;
+        description?: string;
     }[];
     readonly agentPreset?: string | undefined;
     /** The current target's draft text. */
@@ -190,8 +192,9 @@ export interface NewConversationPanelProps {
     readonly actions: NewConversationPanelActions;
 }
 /** Host and workspace selection for the native hero row. */
-export declare function NewConversationTarget({ useView, actions, renderWorkspace }: NewConversationPanelProps & {
+export declare function NewConversationTarget({ useView, actions, renderWorkspace, renderDraftPreset }: NewConversationPanelProps & {
     renderWorkspace?: NativeWorkspaceControl;
+    renderDraftPreset?: NativeDraftPreset;
 }): import("react").JSX.Element;
 /**
  * Text-only composer for a draft that has no Session binding yet.

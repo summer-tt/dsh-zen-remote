@@ -21,7 +21,7 @@
  * Node test can drive it with plain strings.
  */
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
-import type { DraftSlotProps, NativeWorkspaceControl } from './register.ts'
+import type { DraftSlotProps, NativeDraftPreset, NativeWorkspaceControl } from './register.ts'
 import { fromVirtual } from '../../virtual-id.js'
 import { Button, Menu, observeComposition, type MenuEntry } from '@deepseek-ai/dsh-client-ui-primitives'
 import {
@@ -125,7 +125,7 @@ export interface NewConversationView {
   /** Why the roster failed, when it did; shown with the retry action. */
   readonly directoryError: string | undefined
   readonly workspaces: readonly WorkspaceOption[]
-  readonly presets?: readonly { id: string; label: string }[]
+  readonly presets?: readonly { id: string; label: string; name?: string; description?: string }[]
   readonly agentPreset?: string | undefined
   /** The current target's draft text. */
   readonly text: string
@@ -324,7 +324,7 @@ function HostPicker({ copy, directory, hostId, onSelect }: {
 }
 
 /** Host and workspace selection for the native hero row. */
-export function NewConversationTarget({ useView, actions, renderWorkspace }: NewConversationPanelProps & { renderWorkspace?: NativeWorkspaceControl }) {
+export function NewConversationTarget({ useView, actions, renderWorkspace, renderDraftPreset }: NewConversationPanelProps & { renderWorkspace?: NativeWorkspaceControl; renderDraftPreset?: NativeDraftPreset }) {
   const { target, directory, workspaces, presets, agentPreset, copy, returnSessionId } = useView(state => state)
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false)
   const [presetMenuOpen, setPresetMenuOpen] = useState(false)
@@ -366,7 +366,12 @@ export function NewConversationTarget({ useView, actions, renderWorkspace }: New
         }}
         disabled={directory.phase !== 'ready' || workspaces.length === 0}
       />}
-      {presets !== undefined && (
+      {renderDraftPreset !== undefined ? renderDraftPreset({
+        options: presets ?? [],
+        selectedId: agentPreset,
+        disabled: directory.phase !== 'ready',
+        onSelect: id => actions.onSelectPreset?.(id),
+      }) : presets !== undefined && (
         <Picker
           kind="preset"
           label={presets.find(preset => preset.id === agentPreset)?.label ?? mode}

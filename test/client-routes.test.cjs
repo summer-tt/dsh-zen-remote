@@ -2427,6 +2427,9 @@ test('session-host scopes reads and original-provider model selection to one pai
     { id: 'a', namespace: 'session', method: 'selectModel', args: { request: selected } },
   ])
   assert.equal((await call({ ...input, sessionId: toVirtual('abcd1234', 'unshared') })).error.code, 'not-shared')
+  assert.equal((await call({ operation: 'agentPresets', hostId: 'ffffffff' })).ok, true)
+  assert.deepEqual(calls.at(-1), { id: 'b', namespace: 'agentPresets', method: 'list', args: {} })
+  assert.equal((await call({ operation: 'agentPresets', sessionId })).error.code, 'bad-request')
   const before = calls.length
   assert.equal((await call({ ...input, hostId: 'ffffffff' })).error.code, 'bad-request')
   assert.equal((await call({ ...input, sessionId: 'shared' })).error.code, 'not-virtual')

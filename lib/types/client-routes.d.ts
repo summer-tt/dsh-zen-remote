@@ -275,7 +275,10 @@ export type SessionHostLocator = {
 };
 export type SessionHostOperation = ({
     operation: 'modelCatalog' | 'getFavorites';
-} & SessionHostLocator) | ({
+} & SessionHostLocator) | {
+    operation: 'agentPresets';
+    hostId: string;
+} | ({
     operation: 'setFavorite';
 } & SessionHostLocator & FavoriteUpdate) | {
     operation: 'selectModel';

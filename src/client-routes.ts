@@ -403,6 +403,7 @@ export type SessionHostLocator = { hostId: string; sessionId?: never } | { hostI
 
 export type SessionHostOperation =
   | ({ operation: 'modelCatalog' | 'getFavorites' } & SessionHostLocator)
+  | { operation: 'agentPresets'; hostId: string }
   | ({ operation: 'setFavorite' } & SessionHostLocator & FavoriteUpdate)
   | { operation: 'selectModel'; sessionId: string; provider: string; model: string; reasoningEffort?: string }
 
@@ -456,12 +457,15 @@ async function invokeSessionHost(
   signal: AbortSignal,
 ): Promise<unknown> {
   const { operation, hostId, sessionId, ...input } = body
-  if (operation !== 'modelCatalog' && operation !== 'selectModel' && operation !== 'getFavorites' && operation !== 'setFavorite') {
+  if (operation !== 'agentPresets' && operation !== 'modelCatalog' && operation !== 'selectModel' && operation !== 'getFavorites' && operation !== 'setFavorite') {
     throw new ClientRouteError(400, 'bad-operation', 'Unknown session Host operation')
   }
   const parts = sessionId === undefined ? undefined : fromVirtual(sessionId)
   if (sessionId !== undefined && (parts === undefined || parts.id === '')) {
     throw new ClientRouteError(400, 'not-virtual', 'sessionId must be a virtual session id')
+  }
+  if (operation === 'agentPresets' && sessionId !== undefined) {
+    throw new ClientRouteError(400, 'bad-request', 'Agent presets require a Host ID')
   }
   if ((hostId !== undefined && parts !== undefined) || (operation === 'selectModel' && parts === undefined)) {
     throw new ClientRouteError(400, 'bad-request', 'Specify exactly one target locator. Model selection requires sessionId')
@@ -486,6 +490,7 @@ async function invokeSessionHost(
     return requestFavorites(relay, options.bridgeRegistry, parts?.id, update, signal)
   }
   if (Object.keys(input).length !== 0) throw new ClientRouteError(400, 'bad-request', 'Unexpected operation fields')
+  if (operation === 'agentPresets') return relay.invoke('agentPresets', 'list', {}, signal)
   if (operation === 'getFavorites') return requestFavorites(relay, options.bridgeRegistry, parts?.id, undefined, signal)
   return parts === undefined
     ? relay.invoke('session', 'modelCatalog', {}, signal)

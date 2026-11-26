@@ -13,7 +13,7 @@ const HOST = '/_dsh/zen-remote/client/session-host'
 
 interface HostRow { hostId: string; displayName: string; state: string; supportsCreateDraft?: true }
 interface Favorite { provider: string; model: string }
-interface Preset { id: string; name?: string; isDefault?: boolean; broken?: string }
+interface Preset { id: string; name?: string; description?: string; isDefault?: boolean; broken?: string }
 const modeNames: Record<string, readonly [string, string]> = {
   standard: ['标准模式', 'Standard mode'], ptc: ['PTC 模式', 'PTC mode'],
   minimal: ['极简模式', 'Minimal mode'], cordis: ['创造模式', 'Creator mode'],
@@ -170,11 +170,11 @@ export function mountNewConversation(ctx: ClientContext): ((workspaceId?: string
       ? (zh ? '正在连接所选 Host' : 'Connecting to the selected Host')
       : incompatible ? (zh ? '此 Host 的版本不支持新会话' : 'This Host version does not support new conversations')
         : words.hostOffline
-    const presetPrefix = state.hostId === 'local' || host === undefined ? undefined : `[${host.displayName}] `
-    const presets = presetRows.map(row => {
-      const label = row.name ?? modeNames[row.id]?.[zh ? 0 : 1] ?? row.id
-      return { id: row.id, label: presetPrefix !== undefined && label.startsWith(presetPrefix) ? label.slice(presetPrefix.length) : label }
-    })
+    const presets = presetRows.map(row => ({
+      id: row.id, label: row.name ?? modeNames[row.id]?.[zh ? 0 : 1] ?? row.id,
+      ...(row.name === undefined ? {} : { name: row.name }),
+      ...(row.description === undefined ? {} : { description: row.description }),
+    }))
     return { target: state, directory: roster, directoryError: roster.phase === 'error' ? roster.message : undefined,
       workspaces, presets, agentPreset: chosenPreset ?? presetRows.find(row => row.isDefault)?.id,
       text: drafts.read(state.hostId, state.workspaceId), selection: model(), modelPicker: pickerNode,
@@ -240,14 +240,12 @@ export function mountNewConversation(ctx: ClientContext): ((workspaceId?: string
     const { hostId } = target.state.getSnapshot()
     try {
       const remote = ctx.get('remote') as { agentPresets?: { list(): Promise<{ ok: boolean; value?: { presets: Preset[] } }> } } | undefined
-      const result = await remote?.agentPresets?.list()
+      const result = hostId === 'local' ? await remote?.agentPresets?.list() : {
+        ok: true, value: await call<{ presets: Preset[] }>(HOST, { operation: 'agentPresets', hostId }),
+      }
       if (disposed || request !== presetRequest) return
       if (!result?.ok || result.value === undefined) return
-      presetRows = result.value.presets.flatMap(row => {
-        const origin = fromVirtual(row.id)
-        if (row.broken || (origin?.serverId ?? 'local') !== hostId) return []
-        return [{ ...row, id: origin?.id ?? row.id }]
-      })
+      presetRows = result.value.presets.filter(row => !row.broken && fromVirtual(row.id) === undefined)
       if (!presetRows.some(row => row.id === chosenPreset)) chosenPreset = undefined
       publish()
     } catch { /* The target Host can still choose its default preset. */ }
@@ -392,7 +390,7 @@ export function mountNewConversation(ctx: ClientContext): ((workspaceId?: string
       drafts.write(current.hostId, current.workspaceId, text)
       publish()
     },
-    onRetryDirectory: () => { void reloadHosts(); void loadCatalog(); void loadFavorites() },
+    onRetryDirectory: () => { void reloadHosts(); void loadCatalog(); void loadFavorites(); void loadPresets() },
     onOpenModelPicker: () => {
       if (openerRef.current !== null) openerRef.current()
       else if (nativePicker !== null) {
