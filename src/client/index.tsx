@@ -115,7 +115,7 @@ function activityInject(ctx: ClientContext) {
  */
 export function apply(ctx: ClientContext): void {
   let openNewConversation: ReturnType<typeof mountNewConversation>
-  ctx.inject(['uiWorkspace'], (scope: ClientContext) => {
+  ctx.inject(['uiWorkspace', 'remote', 'remote.session', 'remote.agentPresets'], (scope: ClientContext) => {
     openNewConversation = mountNewConversation(scope)
     scope.effect(() => () => { openNewConversation = undefined })
   })
