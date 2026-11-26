@@ -46,6 +46,7 @@ export type NativeWorkspaceControl = (options: {
   label?: string | undefined
   selectedId?: string | undefined
   filterWorkspace: (id: string) => boolean
+  workspaceTitle?: (id: string, title: string) => string
   allowAddWorkspace: boolean
   onPick: (id: string) => void
 }) => ReactNode

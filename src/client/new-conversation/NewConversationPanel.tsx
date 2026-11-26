@@ -314,7 +314,7 @@ export function NewConversationTarget({ useView, actions, renderWorkspace }: New
   const selectedWorkspace = workspaces.find(workspace => workspace.workspaceId === target.workspaceId)
   return (
     <>
-      <Picker
+      {(hostItems.length > 1 || target.hostId !== LOCAL_HOST) && <Picker
         label={hostName(copy, directory, target.hostId)}
         kind="host"
         ariaLabel={copy.ariaHostPicker}
@@ -328,11 +328,12 @@ export function NewConversationTarget({ useView, actions, renderWorkspace }: New
           if (id !== target.hostId) actions.onSelectHost(id as HostId)
         }}
         disabled={directory.phase !== 'ready'}
-      />
+      />}
       {renderWorkspace !== undefined ? renderWorkspace({
         label: selectedWorkspace?.label,
         selectedId: selectedWorkspace?.displayId,
         filterWorkspace: id => (fromVirtual(id)?.serverId ?? LOCAL_HOST) === target.hostId,
+        workspaceTitle: (id, title) => workspaces.find(workspace => workspace.displayId === id)?.label ?? title,
         allowAddWorkspace: target.hostId === LOCAL_HOST,
         onPick: id => {
           const origin = fromVirtual(id)
