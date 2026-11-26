@@ -29,6 +29,43 @@ import type { ClientContext } from '../compat/types.ts';
 import type { MainPanelId } from '@deepseek-ai/dsh-client-ui-layout/client';
 import type { NewConversationPanelActions, NewConversationPanelProps, NewConversationViewSource } from './NewConversationPanel.tsx';
 import type { NewConversationTriggerProps, TriggerSource } from './NewConversationTrigger.tsx';
+/** Navigation extension exposed by DSH builds with native draft slots. */
+export interface NativeDraftNavigation {
+    registerNewSessionDraft(open: (workspaceId?: string) => boolean): () => void;
+    openSessionDraft(): AbortSignal;
+}
+export type NativeWorkspaceControl = (options: {
+    label?: string | undefined;
+    selectedId?: string | undefined;
+    filterWorkspace: (id: string) => boolean;
+    allowAddWorkspace: boolean;
+    onPick: (id: string) => void;
+}) => ReactNode;
+export type DraftSlotProps = NewConversationPanelProps & {
+    renderWorkspace?: NativeWorkspaceControl;
+    draftAvailable: boolean;
+    children?: ReactNode;
+    useActive: (select: (active: boolean) => boolean) => boolean;
+};
+declare module '@deepseek-ai/dsh-client-ui-slots' {
+    interface SlotMap {
+        'conversation.hero.draftTarget': {
+            kind: 'hoc';
+            scope: 'root';
+            owner: {
+                readonly draftAvailable: boolean;
+                readonly renderWorkspace: NativeWorkspaceControl;
+            };
+        };
+        'conversation.hero.draftComposer': {
+            kind: 'hoc';
+            scope: 'root';
+            owner: {
+                readonly draftAvailable: boolean;
+            };
+        };
+    }
+}
 declare module '@deepseek-ai/dsh-client-ui-slots' {
     interface SlotMap {
         /**
@@ -91,6 +128,13 @@ export interface NewConversationRegistration {
      * the navigation that follows does not wait for it.
      */
     readonly onBeforeOpen?: (() => void) | undefined;
+    readonly native?: {
+        readonly navigation: NativeDraftNavigation;
+        readonly active: TriggerSource<boolean>;
+        readonly open: (workspaceId?: string) => boolean;
+        readonly target: (props: DraftSlotProps) => ReactNode;
+        readonly composer: (props: DraftSlotProps) => ReactNode;
+    };
 }
 /**
  * Register the stylesheet, the `main` panel, and the sidebar trigger layer.

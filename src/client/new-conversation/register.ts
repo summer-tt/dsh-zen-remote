@@ -36,6 +36,36 @@ import type {
 } from './NewConversationPanel.tsx'
 import type { NewConversationTriggerProps, TriggerSource } from './NewConversationTrigger.tsx'
 
+/** Navigation extension exposed by DSH builds with native draft slots. */
+export interface NativeDraftNavigation {
+  registerNewSessionDraft(open: (workspaceId?: string) => boolean): () => void
+  openSessionDraft(): AbortSignal
+}
+
+export type NativeWorkspaceControl = (options: {
+  label?: string | undefined
+  selectedId?: string | undefined
+  filterWorkspace: (id: string) => boolean
+  allowAddWorkspace: boolean
+  onPick: (id: string) => void
+}) => ReactNode
+
+export type DraftSlotProps = NewConversationPanelProps & {
+  renderWorkspace?: NativeWorkspaceControl
+  draftAvailable: boolean
+  children?: ReactNode
+  useActive: (select: (active: boolean) => boolean) => boolean
+}
+
+declare module '@deepseek-ai/dsh-client-ui-slots' {
+  interface SlotMap {
+    'conversation.hero.draftTarget': {
+      kind: 'hoc'; scope: 'root'; owner: { readonly draftAvailable: boolean; readonly renderWorkspace: NativeWorkspaceControl }
+    }
+    'conversation.hero.draftComposer': { kind: 'hoc'; scope: 'root'; owner: { readonly draftAvailable: boolean } }
+  }
+}
+
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface SlotMap {
     /**
@@ -106,6 +136,13 @@ export interface NewConversationRegistration {
    * the navigation that follows does not wait for it.
    */
   readonly onBeforeOpen?: (() => void) | undefined
+  readonly native?: {
+    readonly navigation: NativeDraftNavigation
+    readonly active: TriggerSource<boolean>
+    readonly open: (workspaceId?: string) => boolean
+    readonly target: (props: DraftSlotProps) => ReactNode
+    readonly composer: (props: DraftSlotProps) => ReactNode
+  }
 }
 
 /**
@@ -134,6 +171,21 @@ export function registerNewConversation(
     document.head.appendChild(tag)
     return () => { tag.remove() }
   }, 'dsh-zen-remote: new-conversation styles')
+
+  const { native } = registration
+  if (native !== undefined) {
+    const inject = () => ({ hooks: { view: registration.view, active: native.active }, actions: registration.actions })
+    const slots = [
+      ['conversation.hero.draftTarget', native.target],
+      ['conversation.hero.draftComposer', native.composer],
+    ] as const
+    for (const [name, Content] of slots) {
+      const options = { name, id: NEW_CONVERSATION_ACTION_ID, inject }
+      ctx.slots.inject(name, () => ctx.slots.register(options, Content))
+    }
+    ctx.effect(() => native.navigation.registerNewSessionDraft(native.open), 'dsh-zen-remote: native new conversation')
+    return
+  }
 
   ctx.slots.register({
     name: 'main',

@@ -49,43 +49,56 @@ export const NEW_CONVERSATION_CSS = `
 .zr-newc-picker[data-zen-remote="new-conversation-picker"] {
   display: inline-flex;
   align-items: center;
-  max-width: min(60vw, 280px);
-  height: 28px;
-  padding: 0 10px;
-  border: 1px solid var(--dsw-alias-border-subtle);
-  border-radius: 8px;
-  background: var(--dsw-alias-bg-elevated);
+  gap: 4px;
+  min-width: 0;
+  max-width: min(100%, 360px);
+  min-height: 28px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--dsw-radius-sm);
+  background: transparent;
   color: var(--dsw-alias-label-primary);
   font: inherit;
   font-size: 13px;
-  line-height: 16px;
+  line-height: 20px;
+  font-weight: 500;
   cursor: pointer;
 }
-.zr-newc-picker[data-zen-remote="new-conversation-picker"]:hover:not(:disabled) {
+.zr-newc-picker:hover:not(:disabled), .zr-newc-picker[aria-expanded="true"] {
   background: var(--dsw-alias-interactive-bg-hover);
 }
-.zr-newc-picker[data-zen-remote="new-conversation-picker"]:disabled {
-  color: var(--dsw-alias-label-tertiary);
-  cursor: default;
-}
+.zr-newc-picker:disabled { cursor: default; color: var(--dsw-alias-label-tertiary); }
+.zr-newc-picker svg { flex: none; }
+.zr-newc-picker svg:last-child { color: var(--dsw-alias-label-caption); }
 .zr-newc-pickerLabel {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.zr-newc-status,
-.zr-newc-notice,
-.zr-newc-hint,
-.zr-newc-failure {
-  margin: 0;
-  padding: 0 clamp(16px, 4vw, 40px);
+.zr-newc-composer { padding: 0 var(--dsh-composer-side-clearance, 16px); min-width: 0; }
+.zr-newc[data-zen-remote="new-conversation"] .zr-newc-composer {
+  width: min(100%, 720px);
+  box-sizing: border-box;
+  margin: 0 auto;
+}
+.zr-newc-card {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  padding-top: 8px;
+  --dsw-elevation-stroke-color: var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-panel);
+  background: var(--dsw-specific-input-major);
+  box-shadow: var(--dsw-elevation-soft);
+}
+.zr-newc-status, .zr-newc-notice, .zr-newc-hint, .zr-newc-failure {
+  margin: 6px 8px;
   font-size: 12px;
   line-height: 18px;
   color: var(--dsw-alias-label-secondary);
-}
-.zr-newc-status,
-.zr-newc-notice {
-  padding-top: 10px;
 }
 .zr-newc-noticeError {
   display: flex;
@@ -94,40 +107,39 @@ export const NEW_CONVERSATION_CSS = `
   color: var(--dsw-alias-state-danger-fg, var(--dsw-alias-label-primary));
 }
 .zr-newc-text[data-zen-remote="new-conversation-text"] {
-  flex: 1 1 auto;
   box-sizing: border-box;
-  width: calc(100% - 2 * clamp(16px, 4vw, 40px));
-  min-height: 120px;
-  margin: 14px clamp(16px, 4vw, 40px) 0;
-  padding: 12px 14px;
-  border: 1px solid var(--dsw-alias-border-subtle);
-  border-radius: 12px;
-  background: var(--dsw-alias-bg-elevated);
+  field-sizing: content;
+  width: 100%;
+  min-height: 52px;
+  max-height: 14lh;
+  padding: 4px 14px 0;
+  border: 0;
+  border-radius: var(--dsw-radius-panel);
+  background: transparent;
   color: var(--dsw-alias-label-primary);
   font: inherit;
-  font-size: 14px;
-  line-height: 22px;
+  font-size: var(--dsh-content-font-size, 14px);
+  line-height: calc(24px + var(--dsh-content-font-delta, 0px));
   resize: none;
 }
-.zr-newc-text[data-zen-remote="new-conversation-text"]:focus-visible {
-  outline: 2px solid var(--dsw-alias-border-strong, var(--dsw-alias-state-business-primary, #4f6ef7));
-  outline-offset: -1px;
-}
-.zr-newc-text[data-zen-remote="new-conversation-text"]:disabled {
-  color: var(--dsw-alias-label-tertiary);
-  cursor: default;
+.zr-newc-text::placeholder { color: var(--dsw-alias-label-tertiary); }
+.zr-newc-text:focus-visible { outline: none; }
+@media (pointer: coarse) {
+  .zr-newc-text[data-zen-remote="new-conversation-text"] { font-size: max(16px, var(--dsh-content-font-size, 14px)); }
 }
 .zr-newc-footer {
   display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
-  padding: 10px clamp(16px, 4vw, 40px) 14px;
+  gap: 12px;
+  padding: 2px 8px 6px;
 }
 .zr-newc-model {
   display: inline-flex;
   align-items: center;
   min-width: 0;
-  flex: 1 1 auto;
+  justify-content: flex-end;
 }
 /* The model seat's own trigger, shown only when the wiring mounts no picker
    node. Reads as a quiet chip: it is the way INTO the picker, not a value. */
@@ -168,12 +180,25 @@ export const NEW_CONVERSATION_CSS = `
   color: var(--dsw-alias-state-danger-fg, var(--dsw-alias-label-primary));
 }
 .zr-newc-submit[data-zen-remote="new-conversation-submit"] {
-  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 34px;
+  height: 34px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--dsw-alias-button-info-fill);
+  color: var(--dsw-alias-label-on-color);
+  cursor: pointer;
+  transform: translateY(-2px);
 }
-.zr-newc-hint {
-  padding-top: 0;
-  padding-bottom: 14px;
+.zr-newc-submit:hover:not(:disabled) { background: var(--dsw-alias-button-info-hover); }
+.zr-newc-submit:disabled { opacity: 0.4; cursor: default; }
+.zr-newc-submit[aria-busy="true"] { opacity: 1; }
+@media (prefers-reduced-motion: no-preference) {
+  .zr-newc-spinner { animation: zr-newc-spin 700ms linear infinite; }
 }
+@keyframes zr-newc-spin { to { transform: rotate(360deg); } }
 
 /* The sidebar trigger layer. Its root is display: contents so the sidebar
    row keeps the button as its direct layout child (a hoc layer must not add

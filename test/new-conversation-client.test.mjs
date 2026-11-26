@@ -891,6 +891,22 @@ test('registerNewConversation: registers the main panel, the sidebar hoc layer w
   delete globalThis.document
 })
 
+test('registerNewConversation: native navigation registers only the draft slots and shared opener', () => {
+  const opened = []
+  const open = () => true
+  const active = { getSnapshot: () => true, subscribe: () => () => {} }
+  const b = registrationBench({ native: {
+    navigation: { registerNewSessionDraft(fn) { opened.push(fn); return () => {} } },
+    active, open, target: () => null, composer: () => null,
+  } })
+  assert.deepEqual(opened, [open])
+  assert.deepEqual(b.injected.map(([name]) => name), ['conversation.hero.draftTarget', 'conversation.hero.draftComposer'])
+  for (const [, register] of b.injected) register()
+  assert.equal(b.registrations.size, 2)
+  assert.equal(b.registrations.get('conversation.hero.draftTarget:zen-new-conversation').options.inject().hooks.active, active)
+  delete globalThis.document
+})
+
 test('registerNewConversation: the sidebar entry resets to the preferred Host BEFORE the panel is selected', () => {
   // Reset and navigation write the SAME log, so the asserted sequence pins
   // their relative order (two separate logs could not).

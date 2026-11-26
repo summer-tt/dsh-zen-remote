@@ -114,7 +114,11 @@ function activityInject(ctx: ClientContext) {
  * @param ctx - client root context.
  */
 export function apply(ctx: ClientContext): void {
-  const openNewConversation = mountNewConversation(ctx)
+  let openNewConversation: ReturnType<typeof mountNewConversation>
+  ctx.inject(['uiWorkspace'], (scope: ClientContext) => {
+    openNewConversation = mountNewConversation(scope)
+    scope.effect(() => () => { openNewConversation = undefined })
+  })
   // 2.0.0 设置页：必须在桌面门之前注册——桌面端 App 里手机外壳整体不生效，
   // 但设置页必须生效（主服务端就是桌面端）。字典、设置页样式与设置表单服务
   // 的按需注入都在 registerSettingsPage 里（那个服务名绝不进顶层的 inject

@@ -21,6 +21,7 @@
  * Node test can drive it with plain strings.
  */
 import { type ReactNode } from 'react';
+import type { DraftSlotProps, NativeWorkspaceControl } from './register.ts';
 import { type DraftTargetState, type HostDirectorySnapshot, type HostId, type WorkspaceId } from './target.ts';
 /** The model a draft will start with, resolved by the user before the first send. */
 export interface ModelSelection {
@@ -33,6 +34,8 @@ export interface ModelSelection {
 export interface WorkspaceOption {
     /** Original Workspace id, as draft keys use it. */
     readonly workspaceId: WorkspaceId;
+    /** ID as displayed by the merged workspace controller. */
+    readonly displayId?: string;
     /** Display title. */
     readonly label: string;
 }
@@ -113,6 +116,11 @@ export interface NewConversationView {
     /** Why the roster failed, when it did; shown with the retry action. */
     readonly directoryError: string | undefined;
     readonly workspaces: readonly WorkspaceOption[];
+    readonly presets?: readonly {
+        id: string;
+        label: string;
+    }[];
+    readonly agentPreset?: string | undefined;
     /** The current target's draft text. */
     readonly text: string;
     /** The staged model; null until the user resolves one, which blocks submit. */
@@ -153,6 +161,7 @@ export type UseNewConversationView = <S>(selector: (view: NewConversationView) =
 export interface NewConversationPanelActions {
     readonly onSelectHost: (hostId: HostId) => void;
     readonly onSelectWorkspace: (workspaceId: WorkspaceId) => void;
+    readonly onSelectPreset?: (id: string) => void;
     readonly onTextChange: (text: string) => void;
     /**
      * Open the model picker for the current target (the T3 `/model` panel).
@@ -176,10 +185,16 @@ export interface NewConversationPanelProps {
     readonly useView: UseNewConversationView;
     readonly actions: NewConversationPanelActions;
 }
+/** Host and workspace selection for the native hero row. */
+export declare function NewConversationTarget({ useView, actions, renderWorkspace }: NewConversationPanelProps & {
+    renderWorkspace?: NativeWorkspaceControl;
+}): import("react").JSX.Element;
 /**
- * The new-conversation panel.
- * @param props - the framework-bound `useView` selector hook and the stable actions.
- * @returns the panel element tree.
+ * Text-only composer for a draft that has no Session binding yet.
  */
-export declare function NewConversationPanel({ useView, actions }: NewConversationPanelProps): import("react").JSX.Element;
+export declare function NewConversationComposer({ useView, actions }: NewConversationPanelProps): import("react").JSX.Element;
+export declare function NativeDraftTarget({ useActive, draftAvailable, children, ...draft }: DraftSlotProps): string | number | boolean | import("react").JSX.Element | Iterable<ReactNode> | null | undefined;
+export declare function NativeDraftComposer({ useActive, draftAvailable, children, ...draft }: DraftSlotProps): string | number | boolean | import("react").JSX.Element | Iterable<ReactNode> | null | undefined;
+/** Compatibility panel for DSH versions without the native draft slots. */
+export declare function NewConversationPanel(props: NewConversationPanelProps): import("react").JSX.Element;
 //# sourceMappingURL=NewConversationPanel.d.ts.map

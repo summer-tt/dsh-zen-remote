@@ -3,9 +3,9 @@ import type { ClientContext, SessionId } from './compat/types.ts'
 import { fromVirtual } from '../virtual-id.js'
 import { DraftTarget, draftKey, type HostDirectorySnapshot, type Source } from './new-conversation/target.ts'
 import { browserDraftStorage, createDraftStore } from './new-conversation/draft-store.ts'
-import { NewConversationPanel, type ModelSelection, type NewConversationView, type SubmitInput } from './new-conversation/NewConversationPanel.tsx'
+import { NativeDraftComposer, NativeDraftTarget, NewConversationPanel, type ModelSelection, type NewConversationView, type SubmitInput } from './new-conversation/NewConversationPanel.tsx'
 import { NewConversationTrigger } from './new-conversation/NewConversationTrigger.tsx'
-import { NEW_CONVERSATION_PANEL_ID, registerNewConversation } from './new-conversation/register.ts'
+import { NEW_CONVERSATION_PANEL_ID, registerNewConversation, type NativeDraftNavigation } from './new-conversation/register.ts'
 
 const CREATE = '/_dsh/zen-remote/new-conversation'
 const HOSTS = '/_dsh/zen-remote/client/session-hosts'
@@ -13,6 +13,11 @@ const HOST = '/_dsh/zen-remote/client/session-host'
 
 interface HostRow { hostId: string; displayName: string; state: string; supportsCreateDraft?: true }
 interface Favorite { provider: string; model: string }
+interface Preset { id: string; name?: string; isDefault?: boolean; broken?: string }
+const modeNames: Record<string, readonly [string, string]> = {
+  standard: ['标准模式', 'Standard mode'], ptc: ['PTC 模式', 'PTC mode'],
+  minimal: ['极简模式', 'Minimal mode'], cordis: ['创造模式', 'Creator mode'],
+}
 interface Catalog { default: ModelSelection | null; groups: readonly { id: string; name: string; models: readonly { id: string; name?: string }[] }[]; routableProviders?: readonly string[] }
 interface PickerProps {
   hostId: string; catalog: Catalog | null; selection: ModelSelection | null
@@ -70,13 +75,38 @@ export function mountNewConversation(ctx: ClientContext): ((workspaceId?: string
   if (availableStorage === undefined) return
   const storage = availableStorage
   const drafts = createDraftStore(storage)
-  const preference = () => call<{ lastHost: string }>(CREATE)
+  let creationForbidden = false
+  async function preference(): Promise<{ lastHost: string }> {
+    try {
+      return await call<{ lastHost: string }>(CREATE)
+    } catch (error) {
+      if (error instanceof HostRequestError && error.message === 'forbidden') {
+        creationForbidden = true
+        if (isOpen() && draftNavigation !== undefined) {
+          active.set(false)
+          workspace?.startSession?.()
+        }
+      }
+      throw error
+    }
+  }
   const target = new DraftTarget({ readLastHost: async () => (await preference()).lastHost, saveLastHost: async () => {} })
   const directory = source<HostDirectorySnapshot>({ phase: 'pending' })
   const stopDirectory = target.registerHostDirectory(directory)
   const label = source('New conversation')
   const pendingKey = (hostId: string, workspaceId: string | undefined) => `dsh.zen.newConversation.submit.${draftKey(hostId, workspaceId)}`
   const enabled = source(false)
+  const active = source(false)
+  const workspace = ctx.get('uiWorkspace') as (Partial<NativeDraftNavigation> & {
+    openSession(id: SessionId): void
+    startSession(): void
+  }) | undefined
+  const navigation = typeof workspace?.registerNewSessionDraft === 'function' && typeof workspace.openSessionDraft === 'function'
+    ? workspace as NativeDraftNavigation : undefined
+  let draftNavigation: AbortSignal | undefined
+  const isOpen = () => navigation === undefined
+    ? ctx.layout.panelInfo.getSnapshot().activePanelId === NEW_CONVERSATION_PANEL_ID
+    : draftNavigation?.aborted === false
   const openerRef: PickerProps['openerRef'] = { current: null }
   let nativePicker: HTMLSelectElement | null = null
   let view: ReturnType<typeof source<NewConversationView>>
@@ -86,6 +116,10 @@ export function mountNewConversation(ctx: ClientContext): ((workspaceId?: string
   let catalogRequest = 0
   let favoritesRequest = 0
   let catalog: Catalog | null = null
+  let presetRequest = 0
+  let presetRows: readonly Preset[] = []
+  let chosenPreset: string | undefined
+  let presetHost: string | undefined
   let favorites: Favorite[] = []
   let selection: ModelSelection | null = null
   let catalogError: string | undefined
@@ -101,7 +135,10 @@ export function mountNewConversation(ctx: ClientContext): ((workspaceId?: string
     const words = strings()
     const workspaces = ctx.workspaces.list.getSnapshot().items.flatMap(row => {
       const ws = hostWorkspace(row.workspaceId)
-      return ws.hostId === state.hostId ? [{ workspaceId: ws.workspaceId, label: row.title }] : []
+      const hostName = hosts.find(host => host.hostId === ws.hostId)?.displayName
+      const prefix = hostName === undefined ? undefined : `${hostName} · `
+      const label = prefix !== undefined && row.title.startsWith(prefix) ? row.title.slice(prefix.length) : row.title
+      return ws.hostId === state.hostId ? [{ workspaceId: ws.workspaceId, displayId: row.workspaceId, label }] : []
     })
     const pickerNode = picker === undefined ? createElement('select', {
       'aria-label': words.ariaOpenModelPicker,
@@ -126,8 +163,10 @@ export function mountNewConversation(ctx: ClientContext): ((workspaceId?: string
     const roster = directory.getSnapshot()
     const host = hosts.find(row => row.hostId === state.hostId)
     const incompatible = host?.state === 'incompatible' || (host?.state === 'online' && host.supportsCreateDraft !== true)
+    const presets = presetRows.map(row => ({ id: row.id, label: row.name ?? modeNames[row.id]?.[words.title === '新会话' ? 0 : 1] ?? row.id }))
     return { target: state, directory: roster, directoryError: roster.phase === 'error' ? roster.message : undefined,
-      workspaces, text: drafts.read(state.hostId, state.workspaceId), selection: model(), modelPicker: pickerNode,
+      workspaces, presets, agentPreset: chosenPreset ?? presetRows.find(row => row.isDefault)?.id,
+      text: drafts.read(state.hostId, state.workspaceId), selection: model(), modelPicker: pickerNode,
       copy: incompatible ? { ...words, hostOffline: words.title === '新会话' ? '此 Host 的版本不支持新会话' : 'This Host version does not support new conversations' } : words,
       pendingSubmission: storage.getItem(pendingKey(state.hostId, state.workspaceId)) !== null }
   }
@@ -156,6 +195,7 @@ export function mountNewConversation(ctx: ClientContext): ((workspaceId?: string
         if (selectedHost === target.state.getSnapshot().hostId) {
           void loadCatalog()
           void loadFavorites()
+          void loadPresets()
         }
       }
     } catch {
@@ -183,6 +223,24 @@ export function mountNewConversation(ctx: ClientContext): ((workspaceId?: string
     publish()
   }
 
+  async function loadPresets() {
+    const request = ++presetRequest
+    const { hostId } = target.state.getSnapshot()
+    try {
+      const remote = ctx.get('remote') as { agentPresets?: { list(): Promise<{ ok: boolean; value?: { presets: Preset[] } }> } } | undefined
+      const result = await remote?.agentPresets?.list()
+      if (disposed || request !== presetRequest) return
+      if (!result?.ok || result.value === undefined) return
+      presetRows = result.value.presets.flatMap(row => {
+        const origin = fromVirtual(row.id)
+        if (row.broken || (origin?.serverId ?? 'local') !== hostId) return []
+        return [{ ...row, id: origin?.id ?? row.id }]
+      })
+      if (!presetRows.some(row => row.id === chosenPreset)) chosenPreset = undefined
+      publish()
+    } catch { /* The target Host can still choose its default preset. */ }
+  }
+
   async function loadFavorites() {
     const request = ++favoritesRequest
     const { hostId } = target.state.getSnapshot()
@@ -207,6 +265,12 @@ export function mountNewConversation(ctx: ClientContext): ((workspaceId?: string
 
   function targetChanged() {
     const state = target.state.getSnapshot()
+    if (state.hostId !== presetHost) {
+      presetHost = state.hostId
+      presetRows = []
+      chosenPreset = undefined
+      void loadPresets()
+    }
     if (state.catalogGeneration !== generation) {
       generation = state.catalogGeneration
       catalog = null; selection = null; favorites = []; catalogError = undefined; favoritesError = undefined
@@ -217,6 +281,7 @@ export function mountNewConversation(ctx: ClientContext): ((workspaceId?: string
 
   async function submit(input: SubmitInput) {
     const current = target.state.getSnapshot()
+    const submittedFrom = draftNavigation
     const hostId = input.hostId ?? current.hostId
     const workspaceId = input.workspaceId ?? current.workspaceId
     if (workspaceId === undefined) return { ok: false as const, message: strings().pickWorkspaceFirst }
@@ -227,7 +292,11 @@ export function mountNewConversation(ctx: ClientContext): ((workspaceId?: string
     const key = draftKey(hostId, workspaceId)
     const revision = textRevision.get(key) ?? 0
     const storageKey = pendingKey(hostId, workspaceId)
-    const data = { workspaceId: workspaceId, text: input.text ?? drafts.read(hostId, workspaceId), model: staged, clientTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone }
+    const data = {
+      workspaceId, text: input.text ?? drafts.read(hostId, workspaceId), model: staged,
+      clientTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      ...(chosenPreset === undefined ? {} : { agentPreset: chosenPreset }),
+    }
     try {
       type StoredSubmission = typeof data & { creationRequestId: string; requestId: string }
       const existing = JSON.parse(storage.getItem(storageKey) ?? 'null') as StoredSubmission | null
@@ -243,8 +312,7 @@ export function mountNewConversation(ctx: ClientContext): ((workspaceId?: string
         drafts.clear(hostId, workspaceId)
       }
       if (storage.getItem(storageKey) === stored) storage.removeItem(storageKey)
-      if (!disposed && input.generation === target.state.getSnapshot().generation && ctx.layout.panelInfo.getSnapshot().activePanelId === NEW_CONVERSATION_PANEL_ID) {
-        const workspace = ctx.get('uiWorkspace') as { openSession(id: SessionId): void } | undefined
+      if (!disposed && input.generation === target.state.getSnapshot().generation && submittedFrom === draftNavigation && isOpen()) {
         workspace?.openSession(result.sessionId)
       }
       publish()
@@ -257,7 +325,7 @@ export function mountNewConversation(ctx: ClientContext): ((workspaceId?: string
   }
 
   function open(workspaceId?: string): boolean {
-    if (!enabled.getSnapshot()) return false
+    if (creationForbidden || (navigation === undefined && !enabled.getSnapshot())) return false
     if (workspaceId === undefined) target.resetToPreferredHost()
     else {
       const item = hostWorkspace(workspaceId)
@@ -266,17 +334,32 @@ export function mountNewConversation(ctx: ClientContext): ((workspaceId?: string
       if (target.state.getSnapshot().hostId !== item.hostId) return false
       target.selectWorkspace(item.workspaceId)
     }
-    ctx.layout.selectPanel(NEW_CONVERSATION_PANEL_ID)
+    if (navigation === undefined) ctx.layout.selectPanel(NEW_CONVERSATION_PANEL_ID)
+    else {
+      const signal = navigation.openSessionDraft()
+      draftNavigation = signal
+      signal.addEventListener('abort', () => active.set(false), { once: true })
+      active.set(true)
+      void reloadHosts(); void loadCatalog(); void loadFavorites(); void loadPresets()
+    }
     return true
   }
 
   view = source(snap())
-  registerNewConversation(ctx, NewConversationPanel, NewConversationTrigger, { view, label, enabled, onBeforeOpen: () => target.resetToPreferredHost(), actions: {
+  registerNewConversation(ctx, NewConversationPanel, NewConversationTrigger, {
+    view, label, enabled, onBeforeOpen: () => target.resetToPreferredHost(),
+    ...(navigation === undefined ? {} : { native: { navigation, active, open, target: NativeDraftTarget, composer: NativeDraftComposer } }),
+    actions: {
     onSelectHost: hostId => target.selectHost(hostId),
     onSelectWorkspace: id => {
       const current = target.state.getSnapshot()
       if (current.workspaceId === undefined) drafts.adoptHostDraft(current.hostId, id)
       target.selectWorkspace(id)
+    },
+    onSelectPreset: id => {
+      if (!presetRows.some(row => row.id === id)) return
+      chosenPreset = id
+      publish()
     },
     onTextChange: text => {
       const current = target.state.getSnapshot()
@@ -320,11 +403,11 @@ export function mountNewConversation(ctx: ClientContext): ((workspaceId?: string
     const stopTarget = target.state.subscribe(targetChanged)
     const stopWorkspaces = ctx.workspaces.list.subscribe(publish)
     const stopPanel = ctx.layout.panelInfo.subscribe(() => {
-      if (ctx.layout.panelInfo.getSnapshot().activePanelId !== NEW_CONVERSATION_PANEL_ID) return
-      void reloadHosts(); void loadCatalog(); void loadFavorites()
+      if (navigation !== undefined || !isOpen()) return
+      void reloadHosts(); void loadCatalog(); void loadFavorites(); void loadPresets()
     })
     const interval = window.setInterval(() => {
-      if (ctx.layout.panelInfo.getSnapshot().activePanelId === NEW_CONVERSATION_PANEL_ID) void reloadHosts()
+      if (isOpen()) void reloadHosts()
     }, 5000)
     void preference().then(() => { if (!disposed) enabled.set(true) }, () => {})
     void reloadHosts()
