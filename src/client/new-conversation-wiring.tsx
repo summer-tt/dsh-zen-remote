@@ -1,7 +1,7 @@
 import { createElement, type ComponentType } from 'react'
 import type { ClientContext, SessionId } from './compat/types.ts'
 import { fromVirtual } from '../virtual-id.js'
-import { DraftTarget, draftKey, type HostDirectorySnapshot, type Source } from './new-conversation/target.ts'
+import { DraftTarget, draftKey, type HostDirectorySnapshot, type HostId, type Source } from './new-conversation/target.ts'
 import { browserDraftStorage, createDraftStore } from './new-conversation/draft-store.ts'
 import { NativeDraftComposer, NativeDraftTarget, NewConversationPanel, type ModelSelection, type NewConversationView, type SubmitInput } from './new-conversation/NewConversationPanel.tsx'
 import { NewConversationTrigger } from './new-conversation/NewConversationTrigger.tsx'
@@ -333,9 +333,12 @@ export function mountNewConversation(ctx: ClientContext): ((workspaceId?: string
     }
   }
 
-  function open(workspaceId?: string): boolean {
+  function open(workspaceId?: string, hostId?: HostId): boolean {
     if (creationForbidden || (navigation === undefined && !enabled.getSnapshot())) return false
-    if (workspaceId === undefined) target.resetToPreferredHost()
+    if (hostId !== undefined) {
+      target.selectHost(hostId)
+      if (target.state.getSnapshot().hostId !== hostId) return false
+    } else if (workspaceId === undefined) target.resetToPreferredHost()
     else {
       const item = hostWorkspace(workspaceId)
       if (item.hostId !== 'local' && !hosts.some(host => host.hostId === item.hostId && host.supportsCreateDraft === true)) return false
@@ -360,6 +363,7 @@ export function mountNewConversation(ctx: ClientContext): ((workspaceId?: string
     ...(navigation === undefined ? {} : { native: { navigation, active, open, target: NativeDraftTarget, composer: NativeDraftComposer } }),
     actions: {
     onSelectHost: hostId => target.selectHost(hostId),
+    onOpenHostDraft: hostId => { open(undefined, hostId) },
     onSelectWorkspace: id => {
       const current = target.state.getSnapshot()
       if (current.workspaceId === undefined) drafts.adoptHostDraft(current.hostId, id)

@@ -167,6 +167,7 @@ export type UseNewConversationView = <S>(selector: (view: NewConversationView) =
 /** Stable callbacks the wiring provides. */
 export interface NewConversationPanelActions {
   readonly onSelectHost: (hostId: HostId) => void
+  readonly onOpenHostDraft?: (hostId: HostId) => void
   readonly onSelectWorkspace: (workspaceId: WorkspaceId) => void
   readonly onSelectPreset?: (id: string) => void
   readonly onTextChange: (text: string) => void
@@ -292,21 +293,39 @@ function TargetIcon({ kind }: { kind: 'host' | 'workspace' | 'preset' }) {
   )
 }
 
+function HostPicker({ copy, directory, hostId, onSelect }: {
+  copy: NewConversationCopy; directory: HostDirectorySnapshot; hostId: HostId; onSelect: (id: HostId) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const items: MenuEntry[] = directory.phase === 'ready'
+    ? [{ id: LOCAL_HOST, label: copy.localHost }, ...directory.hosts
+        .filter(host => host.status !== 'unpaired')
+        .map(host => ({ id: host.hostId, label: host.label }))]
+    : []
+  if (items.length <= 1 && hostId === LOCAL_HOST) return null
+  return <Picker
+    label={hostName(copy, directory, hostId)}
+    kind="host"
+    ariaLabel={copy.ariaHostPicker}
+    open={open}
+    onToggle={() => { setOpen(value => !value) }}
+    onClose={() => { setOpen(false) }}
+    items={items}
+    selectedId={hostId}
+    onSelect={id => {
+      setOpen(false)
+      if (id !== hostId) onSelect(id)
+    }}
+    disabled={directory.phase !== 'ready'}
+  />
+}
+
 /** Host and workspace selection for the native hero row. */
 export function NewConversationTarget({ useView, actions, renderWorkspace }: NewConversationPanelProps & { renderWorkspace?: NativeWorkspaceControl }) {
   const { target, directory, workspaces, presets, agentPreset, copy } = useView(state => state)
-  const [hostMenuOpen, setHostMenuOpen] = useState(false)
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false)
   const [presetMenuOpen, setPresetMenuOpen] = useState(false)
   const mode = copy.title === '新会话' ? '模式' : 'Mode'
-  const hostItems: MenuEntry[] = directory.phase === 'ready'
-    ? [
-        { id: LOCAL_HOST, label: copy.localHost },
-        ...directory.hosts
-          .filter(host => host.status !== 'unpaired')
-          .map(host => ({ id: host.hostId, label: host.label })),
-      ]
-    : []
   const workspaceItems: MenuEntry[] = workspaces.map(workspace => ({
     id: workspace.workspaceId,
     label: workspace.label,
@@ -314,21 +333,7 @@ export function NewConversationTarget({ useView, actions, renderWorkspace }: New
   const selectedWorkspace = workspaces.find(workspace => workspace.workspaceId === target.workspaceId)
   return (
     <>
-      {(hostItems.length > 1 || target.hostId !== LOCAL_HOST) && <Picker
-        label={hostName(copy, directory, target.hostId)}
-        kind="host"
-        ariaLabel={copy.ariaHostPicker}
-        open={hostMenuOpen}
-        onToggle={() => { setHostMenuOpen(open => !open) }}
-        onClose={() => { setHostMenuOpen(false) }}
-        items={hostItems}
-        selectedId={target.hostId}
-        onSelect={(id) => {
-          setHostMenuOpen(false)
-          if (id !== target.hostId) actions.onSelectHost(id as HostId)
-        }}
-        disabled={directory.phase !== 'ready'}
-      />}
+      <HostPicker copy={copy} directory={directory} hostId={target.hostId} onSelect={actions.onSelectHost} />
       {renderWorkspace !== undefined ? renderWorkspace({
         label: selectedWorkspace?.label,
         selectedId: selectedWorkspace?.displayId,
@@ -560,15 +565,22 @@ export function NewConversationComposer({ useView, actions }: NewConversationPan
 
 export function NativeDraftTarget({ useActive, draftAvailable, children, targetSessionId, renderNativeTarget, ...draft }: DraftSlotProps) {
   const directory = draft.useView(view => view.directory)
+  const copy = draft.useView(view => view.copy)
   if (useActive(active => active && draftAvailable)) return <NewConversationTarget {...draft} />
   if (renderNativeTarget === undefined) return children
   const hostId = fromVirtual(targetSessionId ?? '')?.serverId ?? LOCAL_HOST
   const name = hostEntry(directory, hostId)?.label
   const prefix = name === undefined ? undefined : `[${name}] `
-  return renderNativeTarget((id, label) => {
+  const nativeTarget = renderNativeTarget((id, label) => {
     if ((fromVirtual(id)?.serverId ?? LOCAL_HOST) !== hostId) return undefined
     return prefix !== undefined && label.startsWith(prefix) ? label.slice(prefix.length) : label
   })
+  return <>
+    {targetSessionId !== undefined && draft.actions.onOpenHostDraft !== undefined && (
+      <HostPicker copy={copy} directory={directory} hostId={hostId} onSelect={draft.actions.onOpenHostDraft} />
+    )}
+    {nativeTarget}
+  </>
 }
 
 export function NativeDraftComposer({ useActive, draftAvailable, children, ...draft }: DraftSlotProps) {

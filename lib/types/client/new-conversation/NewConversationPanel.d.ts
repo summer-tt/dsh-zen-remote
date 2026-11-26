@@ -160,6 +160,7 @@ export type UseNewConversationView = <S>(selector: (view: NewConversationView) =
 /** Stable callbacks the wiring provides. */
 export interface NewConversationPanelActions {
     readonly onSelectHost: (hostId: HostId) => void;
+    readonly onOpenHostDraft?: (hostId: HostId) => void;
     readonly onSelectWorkspace: (workspaceId: WorkspaceId) => void;
     readonly onSelectPreset?: (id: string) => void;
     readonly onTextChange: (text: string) => void;
