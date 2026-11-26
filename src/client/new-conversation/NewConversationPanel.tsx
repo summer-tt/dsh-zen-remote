@@ -558,8 +558,17 @@ export function NewConversationComposer({ useView, actions }: NewConversationPan
   )
 }
 
-export function NativeDraftTarget({ useActive, draftAvailable, children, ...draft }: DraftSlotProps) {
-  return useActive(active => active && draftAvailable) ? <NewConversationTarget {...draft} /> : children
+export function NativeDraftTarget({ useActive, draftAvailable, children, targetSessionId, renderNativeTarget, ...draft }: DraftSlotProps) {
+  const directory = draft.useView(view => view.directory)
+  if (useActive(active => active && draftAvailable)) return <NewConversationTarget {...draft} />
+  if (renderNativeTarget === undefined) return children
+  const hostId = fromVirtual(targetSessionId ?? '')?.serverId ?? LOCAL_HOST
+  const name = hostEntry(directory, hostId)?.label
+  const prefix = name === undefined ? undefined : `[${name}] `
+  return renderNativeTarget((id, label) => {
+    if ((fromVirtual(id)?.serverId ?? LOCAL_HOST) !== hostId) return undefined
+    return prefix !== undefined && label.startsWith(prefix) ? label.slice(prefix.length) : label
+  })
 }
 
 export function NativeDraftComposer({ useActive, draftAvailable, children, ...draft }: DraftSlotProps) {

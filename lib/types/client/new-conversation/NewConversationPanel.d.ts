@@ -193,7 +193,7 @@ export declare function NewConversationTarget({ useView, actions, renderWorkspac
  * Text-only composer for a draft that has no Session binding yet.
  */
 export declare function NewConversationComposer({ useView, actions }: NewConversationPanelProps): import("react").JSX.Element;
-export declare function NativeDraftTarget({ useActive, draftAvailable, children, ...draft }: DraftSlotProps): string | number | boolean | import("react").JSX.Element | Iterable<ReactNode> | null | undefined;
+export declare function NativeDraftTarget({ useActive, draftAvailable, children, targetSessionId, renderNativeTarget, ...draft }: DraftSlotProps): string | number | boolean | import("react").JSX.Element | Iterable<ReactNode> | null | undefined;
 export declare function NativeDraftComposer({ useActive, draftAvailable, children, ...draft }: DraftSlotProps): string | number | boolean | import("react").JSX.Element | Iterable<ReactNode> | null | undefined;
 /** Compatibility panel for DSH versions without the native draft slots. */
 export declare function NewConversationPanel(props: NewConversationPanelProps): import("react").JSX.Element;

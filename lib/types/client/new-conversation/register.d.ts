@@ -42,8 +42,11 @@ export type NativeWorkspaceControl = (options: {
     allowAddWorkspace: boolean;
     onPick: (id: string) => void;
 }) => ReactNode;
+type NativePresetTarget = (display: (id: string, name: string) => string | undefined) => ReactNode;
 export type DraftSlotProps = NewConversationPanelProps & {
     renderWorkspace?: NativeWorkspaceControl;
+    targetSessionId?: string;
+    renderNativeTarget?: NativePresetTarget;
     draftAvailable: boolean;
     children?: ReactNode;
     useActive: (select: (active: boolean) => boolean) => boolean;
@@ -56,6 +59,8 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
             owner: {
                 readonly draftAvailable: boolean;
                 readonly renderWorkspace: NativeWorkspaceControl;
+                readonly targetSessionId?: string;
+                readonly renderNativeTarget?: NativePresetTarget;
             };
         };
         'conversation.hero.draftComposer': {
@@ -146,4 +151,5 @@ export interface NewConversationRegistration {
  * @param registration - live sources and stable actions.
  */
 export declare function registerNewConversation(ctx: ClientContext, panel: NewConversationPanelComponent, trigger: NewConversationTriggerComponent, registration: NewConversationRegistration): void;
+export {};
 //# sourceMappingURL=register.d.ts.map

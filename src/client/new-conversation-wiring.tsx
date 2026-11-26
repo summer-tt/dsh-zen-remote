@@ -168,7 +168,11 @@ export function mountNewConversation(ctx: ClientContext): ((workspaceId?: string
       ? (zh ? '正在连接所选 Host' : 'Connecting to the selected Host')
       : incompatible ? (zh ? '此 Host 的版本不支持新会话' : 'This Host version does not support new conversations')
         : words.hostOffline
-    const presets = presetRows.map(row => ({ id: row.id, label: row.name ?? modeNames[row.id]?.[words.title === '新会话' ? 0 : 1] ?? row.id }))
+    const presetPrefix = state.hostId === 'local' || host === undefined ? undefined : `[${host.displayName}] `
+    const presets = presetRows.map(row => {
+      const label = row.name ?? modeNames[row.id]?.[zh ? 0 : 1] ?? row.id
+      return { id: row.id, label: presetPrefix !== undefined && label.startsWith(presetPrefix) ? label.slice(presetPrefix.length) : label }
+    })
     return { target: state, directory: roster, directoryError: roster.phase === 'error' ? roster.message : undefined,
       workspaces, presets, agentPreset: chosenPreset ?? presetRows.find(row => row.isDefault)?.id,
       text: drafts.read(state.hostId, state.workspaceId), selection: model(), modelPicker: pickerNode,

@@ -51,8 +51,12 @@ export type NativeWorkspaceControl = (options: {
   onPick: (id: string) => void
 }) => ReactNode
 
+type NativePresetTarget = (display: (id: string, name: string) => string | undefined) => ReactNode
+
 export type DraftSlotProps = NewConversationPanelProps & {
   renderWorkspace?: NativeWorkspaceControl
+  targetSessionId?: string
+  renderNativeTarget?: NativePresetTarget
   draftAvailable: boolean
   children?: ReactNode
   useActive: (select: (active: boolean) => boolean) => boolean
@@ -61,7 +65,7 @@ export type DraftSlotProps = NewConversationPanelProps & {
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface SlotMap {
     'conversation.hero.draftTarget': {
-      kind: 'hoc'; scope: 'root'; owner: { readonly draftAvailable: boolean; readonly renderWorkspace: NativeWorkspaceControl }
+      kind: 'hoc'; scope: 'root'; owner: { readonly draftAvailable: boolean; readonly renderWorkspace: NativeWorkspaceControl; readonly targetSessionId?: string; readonly renderNativeTarget?: NativePresetTarget }
     }
     'conversation.hero.draftComposer': { kind: 'hoc'; scope: 'root'; owner: { readonly draftAvailable: boolean } }
   }
