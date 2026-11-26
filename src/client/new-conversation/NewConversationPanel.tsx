@@ -334,6 +334,20 @@ export function NewConversationTarget({ useView, actions, renderWorkspace, rende
     label: workspace.label,
   }))
   const selectedWorkspace = workspaces.find(workspace => workspace.workspaceId === target.workspaceId)
+  const fallbackPreset = presets !== undefined && (
+    <Picker
+      kind="preset"
+      label={presets.find(preset => preset.id === agentPreset)?.label ?? mode}
+      ariaLabel={mode}
+      open={presetMenuOpen}
+      onToggle={() => { setPresetMenuOpen(open => !open) }}
+      onClose={() => { setPresetMenuOpen(false) }}
+      items={presets}
+      selectedId={agentPreset}
+      onSelect={id => { setPresetMenuOpen(false); actions.onSelectPreset?.(id) }}
+      disabled={directory.phase !== 'ready' || presets.length < 2}
+    />
+  )
   return (
     <>
       <HostPicker copy={copy} directory={directory} hostId={target.hostId} onSelect={actions.onSelectHost} />
@@ -366,25 +380,13 @@ export function NewConversationTarget({ useView, actions, renderWorkspace, rende
         }}
         disabled={directory.phase !== 'ready' || workspaces.length === 0}
       />}
-      {renderDraftPreset !== undefined ? renderDraftPreset({
+      {renderDraftPreset === undefined ? fallbackPreset : renderDraftPreset({
         options: presets ?? [],
         selectedId: agentPreset,
         disabled: directory.phase !== 'ready',
+        remote: target.hostId !== LOCAL_HOST,
         onSelect: id => actions.onSelectPreset?.(id),
-      }) : presets !== undefined && (
-        <Picker
-          kind="preset"
-          label={presets.find(preset => preset.id === agentPreset)?.label ?? mode}
-          ariaLabel={mode}
-          open={presetMenuOpen}
-          onToggle={() => { setPresetMenuOpen(open => !open) }}
-          onClose={() => { setPresetMenuOpen(false) }}
-          items={presets}
-          selectedId={agentPreset}
-          onSelect={id => { setPresetMenuOpen(false); actions.onSelectPreset?.(id) }}
-          disabled={directory.phase !== 'ready' || presets.length < 2}
-        />
-      )}
+      }, fallbackPreset)}
     </>
   )
 }

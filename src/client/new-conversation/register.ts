@@ -55,8 +55,9 @@ export type NativeDraftPreset = (control: {
   options: readonly { id: string; name?: string; description?: string }[]
   selectedId?: string | undefined
   disabled?: boolean
+  remote?: boolean
   onSelect: (id: string) => void
-}) => ReactNode
+}, fallback: ReactNode) => ReactNode
 
 type NativePresetTarget = (display: (id: string, name: string) => string | undefined) => ReactNode
 

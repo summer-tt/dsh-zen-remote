@@ -50,8 +50,9 @@ export type NativeDraftPreset = (control: {
     }[];
     selectedId?: string | undefined;
     disabled?: boolean;
+    remote?: boolean;
     onSelect: (id: string) => void;
-}) => ReactNode;
+}, fallback: ReactNode) => ReactNode;
 type NativePresetTarget = (display: (id: string, name: string) => string | undefined) => ReactNode;
 export type DraftSlotProps = NewConversationPanelProps & {
     renderWorkspace?: NativeWorkspaceControl;
