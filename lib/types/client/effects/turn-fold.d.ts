@@ -88,5 +88,5 @@ export declare const BLANK = "data-mnav-blank";
  * If a very long session ever makes streaming feel heavy, narrow the
  * observer to the flow column's own childList and diff instead.
  */
-export declare function installTurnFold(ctx: ClientContext): void;
+export declare function installTurnFold(ctx: ClientContext, desktopOnly?: boolean): void;
 //# sourceMappingURL=turn-fold.d.ts.map

@@ -1035,7 +1035,7 @@ export function NativeDraftTarget({ useActive, draftAvailable, children, targetS
     return prefix !== undefined && label.startsWith(prefix) ? label.slice(prefix.length) : label
   })
   return <>
-    {targetSessionId !== undefined && targetSessionId === mainSessionId && draft.actions.onOpenHostDraft !== undefined && (
+    {(draftAvailable || (targetSessionId !== undefined && targetSessionId === mainSessionId)) && draft.actions.onOpenHostDraft !== undefined && (
       <HostPicker copy={copy} directory={directory} hostId={hostId} onSelect={draft.actions.onOpenHostDraft} />
     )}
     {nativeTarget}

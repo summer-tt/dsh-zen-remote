@@ -1,6 +1,6 @@
 import type { ClientContext, JobsLike, SessionId, WorkspaceId } from './compat/types.ts'
 import { mountNewConversation } from './new-conversation-wiring.tsx'
-import { isDesktopShell } from './compat/desktop.ts'
+import { isDesktopShell, usesNativeDesktopUi } from './compat/desktop.ts'
 import { MobileNavToggle } from './MobileNavToggle.tsx'
 import { MobileNavOverlay } from './MobileNavOverlay.tsx'
 import { MobileDrawerFooter } from './MobileDrawerFooter.tsx'
@@ -11,6 +11,7 @@ import { MobileAttachButton } from './MobileAttachButton.tsx'
 import { MobileAttachChips } from './MobileAttachChips.tsx'
 import { createNavStore } from './nav-store.ts'
 import { MOBILE_CSS } from './styles/index.ts'
+import { TURN_FOLD_CSS } from './styles/turn-fold.css.ts'
 import { installDebugBadge } from './debug.ts'
 import { installPhoneChrome, installSunkInset, installViewportHeal } from './effects/phone-chrome.ts'
 import { installAionuiCompat } from './effects/aionui-compat.ts'
@@ -117,9 +118,10 @@ function activityInject(ctx: ClientContext) {
  * @param ctx - client root context.
  */
 export function apply(ctx: ClientContext): void {
+  const nativeDesktopUi = usesNativeDesktopUi()
   let openNewConversation: ReturnType<typeof mountNewConversation>
   ctx.inject(['uiWorkspace', 'remote', 'remote.session', 'remote.agentPresets'], (scope: ClientContext) => {
-    openNewConversation = mountNewConversation(scope)
+    openNewConversation = mountNewConversation(scope, nativeDesktopUi)
     scope.effect(() => () => { openNewConversation = undefined })
   })
   // 2.0.0 设置页：必须在桌面门之前注册——桌面端 App 里手机外壳整体不生效，
@@ -232,25 +234,22 @@ export function apply(ctx: ClientContext): void {
     ),
   )
 
-  // Desktop gate (DSH 0.1.7): the official Electron shell can be dragged
-  // down to ~520px wide, where every width-based gate would flip the phone
-  // shell on inside the desktop app. Inside that shell this plugin is a
-  // complete no-op — no stylesheet, no effects, no slot entries, which is
-  // bit-for-bit "not installed" and also retires the desktop-fold knobs
-  // there (they exist for narrow desktop *browsers*, which never carry the
-  // dshDesktop bridge). See compat/desktop.ts for the marker's provenance.
   if (isDesktopShell()) return
+  // Desktop browsers keep DSH chrome and can still opt into turn folding.
+  installTurnFold(ctx, nativeDesktopUi)
 
   ctx.effect(() => {
     const tag = document.createElement('style')
     tag.dataset.plugin = 'dsh-zen-remote'
     tag.dataset.pluginCss = 'dsh-zen-remote/mobile.css'
-    tag.textContent = MOBILE_CSS
+    tag.textContent = nativeDesktopUi ? TURN_FOLD_CSS : MOBILE_CSS
     document.head.appendChild(tag)
     return () => {
       tag.remove()
     }
   }, 'dsh-mobile-nav: styles')
+
+  if (nativeDesktopUi) return
 
   // Diagnostic overlay for phone-side repros (?mobile-nav-debug=1).
   installDebugBadge(ctx)
@@ -280,11 +279,6 @@ export function apply(ctx: ClientContext): void {
   // S6: content-area swipe (Chat/Trajectory) + sheet drag-to-close.
   installGestures(ctx)
 
-  // S8: fold a turn's process (tool calls, injected context, slash commands,
-  // Think rows) behind one summary chip. Chat view only, phone only — see
-  // effects/turn-fold.ts for why the keyed conversation.chat.node seat could
-  // not carry this.
-  installTurnFold(ctx)
   installModalBack(ctx)
   installNativeTriggerOverlay(ctx)
   // Third-party composer entries (speed chip, vision toggle) move into the

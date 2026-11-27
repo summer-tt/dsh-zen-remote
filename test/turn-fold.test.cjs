@@ -43,7 +43,8 @@ test('desktop fold opt-in param, localStorage cache, and width-independent attac
   assert.match(wiring[1], /removeAttribute\(DESKTOP_ATTR\)/)
   assert.match(wiring[1], /if \(desktopOptIn\(\) \|\| localStorage\.getItem\(DESKTOP_CACHE_KEY\) === '1'\) enableDesktop\(\)/)
   assert.match(wiring[1], /desktopConfigured\(\)\.then/)
-  assert.match(wiring[1], /if \(narrow\.matches\) attach\(\)\s*\n\s*narrow\.addEventListener/)
+  assert.match(wiring[1], /if \(narrow\?\.matches\) attach\(\)\s*\n\s*narrow\?\.addEventListener/)
+  assert.match(effectSrc, /desktopOnly \? undefined : window\.matchMedia\(PHONE_QUERY\)/)
   assert.match(effectSrc, /if \(desktop \|\| disposed\) return/)
 })
 

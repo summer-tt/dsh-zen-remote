@@ -33,7 +33,7 @@ import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots
 import { describeShare, shareFailText, subscribeIfNotPhoneShell } from '../client-data/shares.ts'
 import type { SharesStore } from '../client-data/shares.ts'
 import { isVirtual } from '../virtual-id.ts'
-import { isDesktopShell } from './compat/desktop.ts'
+import { usesNativeDesktopUi } from './compat/desktop.ts'
 import { NS } from './locales.ts'
 
 export interface RemoteHeaderIconProps extends PropsRuntime<'conversation.session.header.actions'>, PropsLocale<typeof NS> {
@@ -48,9 +48,9 @@ const PHONE_QUERY = '(max-width: 767px)'
  * its answer is a constant false; a plain browser tracks the breakpoint so
  * a window dragged across 767px flips the subscription with it. */
 function usePhoneShell(): boolean {
-  const [phone, setPhone] = useState(() => !isDesktopShell() && window.matchMedia(PHONE_QUERY).matches)
+  const [phone, setPhone] = useState(() => !usesNativeDesktopUi() && window.matchMedia(PHONE_QUERY).matches)
   useEffect(() => {
-    if (isDesktopShell()) return
+    if (usesNativeDesktopUi()) return
     const query = window.matchMedia(PHONE_QUERY)
     const sync = (): void => { setPhone(query.matches) }
     sync()

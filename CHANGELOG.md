@@ -4,6 +4,10 @@
 [GitHub Releases](https://github.com/KyoMio/dsh-zen-remote/releases)（tag 驱动自动生成）。
 界面半边的细节叙事另见 [`docs/interface.md`](docs/interface.md) 的「更新日志」一节。
 
+## 未发布
+
+- 桌面浏览器缩窄时使用 DSH 原生侧栏。在支持原生草稿槽位的 DSH 版本中，桌面的普通新建会话使用本机工作区和原生输入区，远程 Host 仍可使用 Zen Remote 草稿。
+
 ## 2.5.6（2026-11-24）
 
 ### 新增

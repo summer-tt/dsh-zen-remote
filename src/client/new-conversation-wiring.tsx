@@ -1,7 +1,7 @@
 import { createElement, type ComponentType } from 'react'
 import { mainSessionIdOf, type ClientContext, type SessionId } from './compat/types.ts'
 import { fromVirtual } from '../virtual-id.js'
-import { DraftTarget, draftKey, hostSelectable, type HostDirectorySnapshot, type HostId, type Source } from './new-conversation/target.ts'
+import { DraftTarget, draftKey, hostSelectable, nativeLocalWorkspace, type HostDirectorySnapshot, type HostId, type Source } from './new-conversation/target.ts'
 import { browserDraftStorage, createDraftStore } from './new-conversation/draft-store.ts'
 import { draftCompletionSessions } from './new-conversation/completion-sessions.ts'
 import { bareSessionOnlyCommand, type DraftFileCandidate } from './new-conversation/completion.ts'
@@ -118,7 +118,7 @@ function matchesFrozenImages(files: readonly DraftImageFile[] | undefined, ids: 
   return files !== undefined && files.length === ids.length && files.every((image, index) => image.id === ids[index])
 }
 
-export function mountNewConversation(ctx: ClientContext): ((workspaceId?: string) => boolean) | undefined {
+export function mountNewConversation(ctx: ClientContext, nativeDesktopUi: boolean): ((workspaceId?: string) => boolean) | undefined {
   const availableStorage = browserDraftStorage()
   if (availableStorage === undefined) return
   const storage = availableStorage
@@ -156,7 +156,7 @@ export function mountNewConversation(ctx: ClientContext): ((workspaceId?: string
   const active = source(false)
   const workspace = ctx.get('uiWorkspace') as (Partial<NativeDraftNavigation> & {
     openSession(id: SessionId): void
-    startSession(): void
+    startSession(workspaceId?: string): void
   }) | undefined
   const navigation = typeof workspace?.registerNewSessionDraft === 'function' && typeof workspace.openSessionDraft === 'function'
     ? workspace as NativeDraftNavigation : undefined
@@ -671,13 +671,35 @@ export function mountNewConversation(ctx: ClientContext): ((workspaceId?: string
     return true
   }
 
+  const hasRemoteWorkspace = () => ctx.workspaces.list.getSnapshot().items.some(row => fromVirtual(row.workspaceId) !== undefined)
+  const startNativeLocal = (): void => {
+    const { items } = ctx.workspaces.list.getSnapshot()
+    const { byId } = ctx.sessions.list.getSnapshot()
+    const workspaceId = nativeLocalWorkspace(items, byId, mainSession())
+    if (workspaceId === undefined) navigation?.openSessionDraft()
+    else workspace?.startSession(workspaceId)
+  }
+  const openFromNativeAction = (workspaceId?: string): boolean => {
+    if (!nativeDesktopUi) return open(workspaceId)
+    if (workspaceId !== undefined) return fromVirtual(workspaceId) !== undefined && open(workspaceId)
+    if (!hasRemoteWorkspace()) return false
+    startNativeLocal()
+    return true
+  }
+  const selectNativeOrDraftHost = (hostId: HostId, select: () => void): void => {
+    if (nativeDesktopUi && navigation !== undefined && hostId === 'local') startNativeLocal()
+    else select()
+  }
+
   view = source(snap())
   registerNewConversation(ctx, NewConversationPanel, NewConversationTrigger, {
     view, label, enabled, onBeforeOpen: () => target.resetToPreferredHost(),
-    ...(navigation === undefined ? {} : { native: { navigation, active, open, target: NativeDraftTarget, composer: NativeDraftComposer } }),
+    ...(navigation === undefined ? {} : {
+      native: { navigation, active, open: openFromNativeAction, target: NativeDraftTarget, composer: NativeDraftComposer },
+    }),
     actions: {
-    onSelectHost: hostId => target.selectHost(hostId),
-    onOpenHostDraft: hostId => { open(undefined, hostId) },
+    onSelectHost: hostId => selectNativeOrDraftHost(hostId, () => target.selectHost(hostId)),
+    onOpenHostDraft: hostId => selectNativeOrDraftHost(hostId, () => { open(undefined, hostId) }),
     onSelectWorkspace: selectWorkspace,
     remoteWorkspace,
     onSelectPreset: id => {
@@ -766,7 +788,10 @@ export function mountNewConversation(ctx: ClientContext): ((workspaceId?: string
       resolve: item => {
         const selected = hostWorkspace(item.workspaceId)
         if (!enabled.getSnapshot() || (selected.hostId !== 'local' && !hosts.some(host => host.hostId === selected.hostId && host.supportsCreateDraft === true))) return []
-        return [{ id: 'new', label: strings().title, run() { open(item.workspaceId) } }]
+        return [{ id: 'new', label: strings().title, run() {
+          if (nativeDesktopUi && selected.hostId === 'local') workspace?.startSession(item.workspaceId)
+          else open(item.workspaceId)
+        } }]
       },
     }))
   })

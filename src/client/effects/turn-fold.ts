@@ -277,9 +277,9 @@ function groupsOf(flow: Element): readonly Group[] {
  * If a very long session ever makes streaming feel heavy, narrow the
  * observer to the flow column's own childList and diff instead.
  */
-export function installTurnFold(ctx: ClientContext): void {
+export function installTurnFold(ctx: ClientContext, desktopOnly = false): void {
   ctx.effect(() => {
-    const narrow = window.matchMedia(PHONE_QUERY)
+    const narrow = desktopOnly ? undefined : window.matchMedia(PHONE_QUERY)
     const t = ctx.locale.bind(NS)
     /** Turns the reader opened. Deliberately not persisted (spec: a reload
      * returns to the default folded state). */
@@ -503,12 +503,12 @@ export function installTurnFold(ctx: ClientContext): void {
       if (desktop || disposed) return
       desktop = true
       document.documentElement.setAttribute(DESKTOP_ATTR, '')
-      narrow.removeEventListener('change', onChange)
+      narrow?.removeEventListener('change', onChange)
       attach()
     }
 
-    if (narrow.matches) attach()
-    narrow.addEventListener('change', onChange)
+    if (narrow?.matches) attach()
+    narrow?.addEventListener('change', onChange)
     // Both switches are synchronous reads, so a returning reader folds before
     // first paint. Not awaited before phone attach either — folding must not
     // wait on a round-trip.
@@ -525,7 +525,7 @@ export function installTurnFold(ctx: ClientContext): void {
     return () => {
       disposed = true
       document.documentElement.removeAttribute(DESKTOP_ATTR)
-      narrow.removeEventListener('change', onChange)
+      narrow?.removeEventListener('change', onChange)
       stopLocale()
       detach()
     }

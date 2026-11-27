@@ -8,6 +8,29 @@
  * wiring's. Browser-import-free so test/*.test.mjs drives it directly.
  */
 
+import { fromVirtual } from '../../virtual-id.ts'
+
+/** Choose the current or most recent local workspace, ignoring remote workspaces. */
+export function nativeLocalWorkspace(
+  workspaces: readonly { workspaceId: string; createdAt: string; sessionIds: readonly string[] }[],
+  sessions: Readonly<Record<string, { updatedAt: number } | undefined>>,
+  currentSessionId: string | undefined,
+): string | undefined {
+  let recent: string | undefined
+  let latest = -Infinity
+  for (const workspace of workspaces) {
+    if (fromVirtual(workspace.workspaceId) !== undefined) continue
+    if (currentSessionId !== undefined && workspace.sessionIds.includes(currentSessionId)) return workspace.workspaceId
+    const lastSession = workspace.sessionIds.reduce((time, id) => Math.max(time, sessions[id]?.updatedAt ?? -Infinity), -Infinity)
+    const time = lastSession === -Infinity ? Date.parse(workspace.createdAt) : lastSession
+    if (recent === undefined || time > latest) {
+      recent = workspace.workspaceId
+      latest = time
+    }
+  }
+  return recent
+}
+
 /** Stable identity of one Host a new conversation can target: `LOCAL_HOST`, or a paired Host's `serverId`. */
 export type HostId = string
 

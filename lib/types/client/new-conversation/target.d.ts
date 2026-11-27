@@ -7,6 +7,14 @@
  * draft-store.ts; Host listing, model catalogs and Session creation are the
  * wiring's. Browser-import-free so test/*.test.mjs drives it directly.
  */
+/** Choose the current or most recent local workspace, ignoring remote workspaces. */
+export declare function nativeLocalWorkspace(workspaces: readonly {
+    workspaceId: string;
+    createdAt: string;
+    sessionIds: readonly string[];
+}[], sessions: Readonly<Record<string, {
+    updatedAt: number;
+} | undefined>>, currentSessionId: string | undefined): string | undefined;
 /** Stable identity of one Host a new conversation can target: `LOCAL_HOST`, or a paired Host's `serverId`. */
 export type HostId = string;
 /** The Host the Web GUI itself runs on; always selectable and never listed. */

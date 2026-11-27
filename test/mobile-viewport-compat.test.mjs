@@ -6,8 +6,21 @@ import { KEYBOARD_DEFAULTS, parseClientConfig } from '../src/client/client-confi
 import { COMPOSER_CSS } from '../src/client/styles/composer.css.ts'
 import { createSnapshotStore, defineStore, workspaceTitleOf } from '../src/client/compat/store.ts'
 import { mainSessionIdOf } from '../src/client/compat/types.ts'
-import { isDesktopShell } from '../src/client/compat/desktop.ts'
+import { isDesktopShell, usesNativeDesktopUi } from '../src/client/compat/desktop.ts'
 import { clamped } from '../lib/index.js'
+
+test('desktop browser behavior follows the primary pointer and explicit gateway choice', () => {
+  const browser = (lanDevice, finePointer) => ({
+    document: { documentElement: { dataset: { lanDevice } } },
+    matchMedia: query => ({ matches: finePointer && query === '(hover: hover) and (pointer: fine)' }),
+  })
+  assert.equal(usesNativeDesktopUi(browser(undefined, true)), true)
+  assert.equal(usesNativeDesktopUi(browser(undefined, false)), false)
+  assert.equal(usesNativeDesktopUi(browser('auto', true)), true)
+  assert.equal(usesNativeDesktopUi(browser('phone', true)), false)
+  assert.equal(usesNativeDesktopUi(browser('desktop', false)), true)
+  assert.equal(usesNativeDesktopUi({ ...browser('phone', false), dshDesktop: {} }), true)
+})
 
 test('isViewportSunkBelowStatusBar: standalone iOS sunk viewport vs Safari, black-translucent, landscape, Android, partial', () => {
   assert.equal(sunk({ standalone: true, screenHeight: 852, innerHeight: 793, envTop: 59 }), true)

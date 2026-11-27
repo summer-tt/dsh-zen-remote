@@ -145,7 +145,7 @@ test('configForms is lazy: nothing outside the ctx.inject callback touches it', 
 
 test('apply order guard: registerSettingsPage, registerRemoteShareUi, registerRemoteStatusUi, and installRemoteSessionGuard run before the desktop gate', () => {
   const source = readFileSync(join(ROOT, 'src', 'client', 'index.tsx'), 'utf8')
-  const gateAt = source.indexOf('if (isDesktopShell()) return')
+  const gateAt = source.indexOf('if (nativeDesktopUi) return')
   assert.ok(gateAt !== -1)
   for (const call of [
     'registerSettingsPage(ctx, SettingsSection, hostAppearance)',

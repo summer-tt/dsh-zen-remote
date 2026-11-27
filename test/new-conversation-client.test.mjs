@@ -12,6 +12,7 @@ import {
   draftKey,
   hostSelectable,
   isBareModelCommand,
+  nativeLocalWorkspace,
   pastedImages,
   submitActivation,
   submitBlockOf,
@@ -22,6 +23,18 @@ import { detectDraftCompletion, formatDraftFileMention, formatDraftSessionMentio
 import { createDraftImageStore } from '../src/client/new-conversation/draft-images.ts'
 import { MAX_DRAFT_IMAGE_BYTES } from '../src/upload-limits.ts'
 import { registerNewConversation } from '../src/client/new-conversation/register.ts'
+
+test('native local drafts prefer the current local workspace and exclude remote history', () => {
+  const workspaces = [
+    { workspaceId: 'zr~aaaaaaaa~remote', sessionIds: ['remote'], createdAt: '' },
+    { workspaceId: 'current', sessionIds: ['local'], createdAt: '' },
+    { workspaceId: 'recent', sessionIds: [], createdAt: '2026-11-01T00:00:00Z' },
+  ]
+  const sessions = { remote: { updatedAt: Date.now() }, local: { updatedAt: 0 } }
+  assert.equal(nativeLocalWorkspace(workspaces, sessions, 'local'), 'current')
+  assert.equal(nativeLocalWorkspace(workspaces, sessions, 'remote'), 'recent')
+  assert.equal(nativeLocalWorkspace(workspaces.slice(0, 1), sessions, 'remote'), undefined)
+})
 
 /** An in-memory localStorage stand-in recording every call. */
 function memoryStorage() {
