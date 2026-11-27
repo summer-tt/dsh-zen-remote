@@ -18,7 +18,7 @@ import {
 } from '../src/client/new-conversation/target.ts'
 import { createDraftStore } from '../src/client/new-conversation/draft-store.ts'
 import { draftCompletionSessions } from '../src/client/new-conversation/completion-sessions.ts'
-import { detectDraftCompletion, formatDraftFileMention, formatDraftSessionMention, bareSessionOnlyCommand, replaceDraftCompletion } from '../src/client/new-conversation/completion.ts'
+import { detectDraftCompletion, formatDraftFileMention, formatDraftSessionMention, bareSessionOnlyCommand, isDraftSkillReserved, replaceDraftCompletion, replaceDraftSkill } from '../src/client/new-conversation/completion.ts'
 import { createDraftImageStore } from '../src/client/new-conversation/draft-images.ts'
 import { MAX_DRAFT_IMAGE_BYTES } from '../src/upload-limits.ts'
 import { registerNewConversation } from '../src/client/new-conversation/register.ts'
@@ -300,6 +300,20 @@ test('draft completion replaces only the trigger span with native path and Sessi
   assert.deepEqual(replaceDraftCompletion('text /mo tail', detectDraftCompletion('text /mo tail', 8), ''), {
     text: 'text  tail', caret: 5,
   })
+})
+
+test('draft skills insert a native invocation without swallowing ordinary text', () => {
+  for (const [text, caret, expected] of [
+    ['/tes', 4, '/test-skill '], ['/teest-skill continue', 3, '/test-skill continue'],
+    ['/TESt continue', 3, '/test-skill continue'],
+    ['说明 /te，继续', 6, '说明 /test-skill ，继续'], ['see (/te)', 8, 'see ( /test-skill )'],
+  ]) assert.equal(replaceDraftSkill(text, detectDraftCompletion(text, caret), 'test-skill').text, expected)
+  const text = '/teest-skill continue'
+  assert.deepEqual(replaceDraftSkill(text, detectDraftCompletion(text, 3), 'test-skill'), {
+    text: '/test-skill continue', caret: '/test-skill '.length,
+  })
+  for (const name of ['file', 'model', 'compact', 'export', 'rewind', 'undo']) assert.equal(isDraftSkillReserved(name), true)
+  assert.equal(isDraftSkillReserved('model-guide'), false)
 })
 
 test('draft Session candidates use the local Host roster or narrow to a selected workspace', () => {

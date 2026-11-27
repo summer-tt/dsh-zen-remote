@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { AdminAdmission } from './admin-routes.js';
 import { type NewConversationRequest } from './new-conversation/index.js';
 import { type ListDraftFileCandidates } from './new-conversation/draft-file-candidates.js';
+import { type ListDraftSkillCandidates } from './new-conversation/draft-skill-candidates.js';
 import type { RelayPool } from './relay-pool.js';
 export declare const NEW_CONVERSATION_ROUTE = "/_dsh/zen-remote/new-conversation";
 interface Options {
@@ -13,6 +14,7 @@ interface Options {
         sessionId: string;
     }>;
     listLocalDraftFileCandidates: ListDraftFileCandidates;
+    listLocalDraftSkillCandidates?: ListDraftSkillCandidates;
     onRemoteCreated(sessionId: string): void;
 }
 export declare function createNewConversationRoute(options: Options): (req: IncomingMessage, res: ServerResponse) => Promise<void>;

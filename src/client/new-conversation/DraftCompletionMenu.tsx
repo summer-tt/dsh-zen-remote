@@ -1,13 +1,14 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type RefObject } from 'react'
 import {
-  IconChevronRightOutlineRegular, IconDataOutlineRegular, IconPaperclipOutlineRegular, MenuSurface, rankByName, ReferenceIconRegular,
+  IconChevronRightOutlineRegular, IconDataOutlineRegular, IconPaperclipOutlineRegular, IconSkillOutlineRegular, MenuSurface, rankByName, ReferenceIconRegular,
   relativeTime, useAnchoredMaxHeight,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import {
   detectDraftCompletion, formatDraftFileMention, formatDraftSessionMention, matchDraftCompletionSessions,
-  replaceDraftCompletion, SESSION_ONLY_COMMANDS, type DraftCompletionToken, type DraftFileCandidate,
+  isDraftSkillReserved, replaceDraftCompletion, replaceDraftSkill, SESSION_ONLY_COMMANDS, type DraftCompletionToken, type DraftFileCandidate,
 } from './completion.ts'
 import type { NewConversationPanelActions, NewConversationView } from './NewConversationPanel.tsx'
+import type { DraftSkillCandidate } from '../../client-data/draft-skills.ts'
 import { LOCAL_HOST } from './target.ts'
 
 const copy = (zh: boolean) => zh ? {
@@ -16,30 +17,33 @@ const copy = (zh: boolean) => zh ? {
   chooseWorkspace: '选择工作区后即可搜索文件。', fileError: '无法搜索所选工作区的文件。', empty: '没有匹配的引用。',
   offline: '主机离线，恢复连接后可搜索文件。',
   remoteSessions: '发送首条消息后，可在远程会话中引用已共享的会话。',
-  add: '添加', openFiles: '添加图片', fileDescription: '选择 PNG、JPG、WebP 或 GIF',
+  add: '添加', openFiles: '文件', fileDescription: '选择 PNG、JPG、WebP 或 GIF',
   noCommands: '没有匹配的指令。', noSessions: '没有匹配的本机会话。',
-  conversationOnly: '打开会话后可用', skillsUnavailable: '打开会话后可查看当前 Agent preset 的技能。',
+  conversationOnly: '打开会话后可用', skillsUnavailable: '无法读取所选 Host 的技能。',
+  userSkills: '用户全局技能', projectSkills: '项目技能', skillLoading: '正在读取技能…',
 } : {
   model: 'Model', modelDescription: 'Choose a model for the new session', commands: 'Commands', suggestions: 'Completion suggestions',
   files: 'Files & folders', sessions: 'Sessions', drill: 'Open folder', loading: 'Searching files…',
   chooseWorkspace: 'Choose a workspace to search its files.', fileError: 'Could not search files in this workspace.', empty: 'No matching references.',
   offline: 'The host is offline. File search will resume when it reconnects.',
   remoteSessions: 'After sending the first message, you can cite shared sessions in the remote conversation.',
-  add: 'Add', openFiles: 'Attach images', fileDescription: 'Choose PNG, JPG, WebP, or GIF',
+  add: 'Add', openFiles: 'File', fileDescription: 'Choose PNG, JPG, WebP, or GIF',
   noCommands: 'No matching commands.', noSessions: 'No matching local sessions.',
-  conversationOnly: 'Available in an open session', skillsUnavailable: 'Open a session to see skills for its Agent preset.',
+  conversationOnly: 'Available in an open session', skillsUnavailable: 'Could not load skills for the selected Host.',
+  userSkills: 'User Global skills', projectSkills: 'Project skills', skillLoading: 'Loading skills…',
 }
 
 type CompletionCopy = ReturnType<typeof copy>
 
 type Row = {
   readonly id: string
-  readonly section: 'add' | 'commands' | 'files' | 'sessions'
+  readonly section: 'add' | 'commands' | 'files' | 'sessions' | 'userSkills' | 'projectSkills'
   readonly label: string
   readonly description?: string
 } & (
   | { readonly kind: 'model' }
   | { readonly kind: 'attach' }
+  | { readonly kind: 'skill'; readonly name: string }
   | { readonly kind: 'file' | 'folder' | 'session'; readonly mention: string; readonly drill?: string }
 )
 
@@ -112,7 +116,23 @@ export function useDraftCompletion(
   const fileActive = token?.trigger === '@' && target.workspaceId !== undefined && online ? active : null
   const fileRequest = useMemo<FileRequest | null>(() => fileActive === null ? null : { snapshot: fileActive }, [fileActive])
   const currentFiles = result?.request === fileRequest ? result?.rows : undefined
-  const { loadFileCandidates } = actions
+  const skillActive = token?.trigger === '/' && online
+  const skillRequest = useMemo(() => skillActive ? { generation, catalogGeneration, preset: view.agentPreset } : null,
+    [skillActive, generation, catalogGeneration, view.agentPreset])
+  const [skillResult, setSkillResult] = useState<{ request: NonNullable<typeof skillRequest>; rows: readonly DraftSkillCandidate[] | null } | null>(null)
+  const skillRows = skillResult?.request === skillRequest ? skillResult?.rows : undefined
+  const { loadFileCandidates, loadSkillCandidates } = actions
+
+  useEffect(() => {
+    if (skillRequest === null) return
+    const controller = new AbortController()
+    void loadSkillCandidates(skillRequest.generation, skillRequest.preset, controller.signal).then(rows => {
+      if (!controller.signal.aborted) setSkillResult({ request: skillRequest, rows })
+    }, () => {
+      if (!controller.signal.aborted) setSkillResult({ request: skillRequest, rows: null })
+    })
+    return () => controller.abort()
+  }, [skillRequest, loadSkillCandidates])
 
   useEffect(() => {
     if (fileRequest === null) return
@@ -157,8 +177,18 @@ export function useDraftCompletion(
   if (token?.trigger === '/') {
     rows.push(...slashRows(query).map(row => ({ ...row, id: row.name })))
     if (sessionCommands.length > 0) statuses.push(`${words.conversationOnly} · ${sessionCommands.map(row => `/${zh && query !== '' && row.label.includes(query) ? row.label : row.name}`).join(' · ')}`)
-    if (query === '') statuses.push(words.skillsUnavailable)
-    else if (rows.length === 0 && sessionCommands.length === 0) statuses.push(words.noCommands)
+    if (!online || skillRows === null) statuses.push(words.skillsUnavailable)
+    else if (skillRows === undefined) statuses.push(words.skillLoading)
+    else {
+      const ranked = rankByName(skillRows.filter(skill => !isDraftSkillReserved(skill.name)), query)
+      for (const scope of ['user', 'project'] as const) {
+        for (const skill of ranked.filter(row => row.scope === scope).slice(0, 50)) {
+          rows.push({ id: `skill:${skill.name}`, kind: 'skill', section: scope === 'user' ? 'userSkills' : 'projectSkills',
+            name: skill.name, label: `/${skill.name}` })
+        }
+      }
+      if (rows.length === 0 && sessionCommands.length === 0) statuses.push(words.noCommands)
+    }
   } else if (token?.trigger === '@') {
     if (target.workspaceId === undefined) statuses.push(words.chooseWorkspace)
     else if (!online) statuses.push(words.offline)
@@ -186,7 +216,10 @@ export function useDraftCompletion(
     if (rows.length === 0 && statuses.length === 0) statuses.push(words.empty)
   }
 
-  const activeRow = (highlight?.request === active ? rows.find(row => row.id === highlight.id) : undefined) ?? rows[0]
+  const exactQuery = query.toLowerCase()
+  const exact = token?.trigger === '/' && exactQuery !== ''
+    ? rows.find(row => row.id === exactQuery || (row.kind === 'skill' && row.name === exactQuery)) : undefined
+  const activeRow = (highlight?.request === active ? rows.find(row => row.id === highlight.id) : undefined) ?? exact ?? rows[0]
   const activeIndex = activeRow === undefined ? -1 : rows.indexOf(activeRow)
   const readCaret = (el: HTMLTextAreaElement): void => {
     if (disabled || composing.current || el.ownerDocument.activeElement !== el || el.selectionStart !== el.selectionEnd) {
@@ -202,8 +235,9 @@ export function useDraftCompletion(
       || el.value !== active.text || el.selectionStart !== active.caret || el.selectionEnd !== active.caret) return false
     const descent = drill && row.kind === 'folder' ? row.drill : undefined
     const action = row.kind === 'attach' || row.kind === 'model'
-    const value = action ? '' : descent ?? row.mention
-    const next = replaceDraftCompletion(active.text, token, value, !action && descent === undefined)
+    const next = row.kind === 'skill'
+      ? replaceDraftSkill(active.text, token, row.name)
+      : replaceDraftCompletion(active.text, token, action ? '' : descent ?? row.mention, !action && descent === undefined)
     if (!actions.onTextChange(next.text, active.generation, active.text)) return false
     setDismissed(active)
     setRestore({ ...next, generation, catalogGeneration, keepOpen: descent !== undefined })
@@ -226,6 +260,8 @@ export function useDraftCompletion(
       return true
     }
     if (disabled || event.shiftKey) return false
+    if ((event.key === 'Enter' || event.key === 'Tab') && token?.trigger === '/' && query !== '' &&
+      skillRequest !== null && skillRows === undefined && exact === undefined && highlight?.request !== active) return true
     if (event.key === 'Enter') {
       if (activeRow !== undefined && pick(activeRow, false)) {
         pickedWithEnter.current = true
@@ -238,7 +274,7 @@ export function useDraftCompletion(
       if (activeRow !== undefined) return true
       if (el.selectionStart !== el.selectionEnd || sameEditor(dismissed, live)) return false
       const liveToken = detectDraftCompletion(live.text, live.caret)
-      return liveToken?.trigger === '@' || (liveToken?.trigger === '/' && slashRows(liveToken.query).length > 0)
+      return liveToken?.trigger === '@' || (liveToken?.trigger === '/' && (slashRows(liveToken.query).length > 0 || (skillRequest !== null && skillRows === undefined)))
     }
     if (active === null || token === null) return false
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
@@ -321,7 +357,7 @@ function DraftCompletionMenu({ id, rows, activeIndex, statuses, words, anchorSig
                   onMouseDown={event => { event.preventDefault() }}
                   onMouseMove={index === activeIndex ? undefined : () => { onHighlight(row) }}
                   onClick={() => { onPick(row, false) }}>
-                  {row.kind === 'model' ? <IconDataOutlineRegular size={14} /> : row.kind === 'attach' ? <IconPaperclipOutlineRegular size={14} /> : <ReferenceIconRegular kind={row.kind} size={14} />}
+                  {row.kind === 'model' ? <IconDataOutlineRegular size={14} /> : row.kind === 'attach' ? <IconPaperclipOutlineRegular size={14} /> : row.kind === 'skill' ? <IconSkillOutlineRegular size={14} /> : <ReferenceIconRegular kind={row.kind} size={14} />}
                   <span className="zr-newc-completionLabel" title={row.label}>{row.label}</span>
                   {(row.kind === 'model' || row.kind === 'attach') && <span className="zr-newc-completionAlias">{row.kind === 'model' ? '/model' : '/file'}</span>}
                   {row.description !== undefined && <span className="zr-newc-completionDetail" title={row.description}>{row.description}</span>}

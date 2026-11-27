@@ -7,6 +7,7 @@ import {
   DRAFT_FILE_CANDIDATES_METHOD, draftFileCandidateRows, draftFileCandidatesUnsupported, parseDraftFileCandidatesRequest,
   type ListDraftFileCandidates,
 } from './new-conversation/draft-file-candidates.js'
+import { DRAFT_SKILL_CANDIDATES_METHOD, draftSkillRows, draftSkillsUnsupported, parseDraftSkillRequest, type ListDraftSkillCandidates } from './new-conversation/draft-skill-candidates.js'
 import type { RelayPool } from './relay-pool.js'
 import { RelayError } from './relay-client.js'
 import { SESSION_REFERENCE_URI, decodeSessionReferenceUri, encodeSessionReferenceUri } from './session-reference.js'
@@ -22,6 +23,7 @@ interface Options {
   saveRecentHost(hostId: string): Promise<void>
   submitLocal(request: NewConversationRequest): Promise<{ sessionId: string }>
   listLocalDraftFileCandidates: ListDraftFileCandidates
+  listLocalDraftSkillCandidates?: ListDraftSkillCandidates
   onRemoteCreated(sessionId: string): void
 }
 
@@ -73,8 +75,10 @@ async function submitRemote(options: Options, hostId: string, request: NewConver
   return { sessionId }
 }
 
-async function listDraftFileCandidates(options: Options, hostId: string, input: unknown, res: ServerResponse): Promise<void> {
-  const request = parseDraftFileCandidatesRequest(input)
+async function lookupDraftCandidates(options: Options, hostId: string, method: string, request: object, res: ServerResponse,
+  listLocal: (signal: AbortSignal) => Promise<unknown>, filter: (value: unknown) => unknown,
+  unsupported: (cause?: unknown) => NewConversationError,
+): Promise<void> {
   const controller = new AbortController()
   const onClose = () => { if (!res.writableEnded) controller.abort() }
   res.once('close', onClose)
@@ -84,20 +88,37 @@ async function listDraftFileCandidates(options: Options, hostId: string, input: 
     signal.throwIfAborted()
     let value: unknown
     if (hostId === 'local') {
-      value = await options.listLocalDraftFileCandidates(request, signal)
+      value = await listLocal(signal)
     } else {
-      const relay = requireSessionHostRelay(options.getPool(), hostId)
+      const pool = options.getPool()
+      const skillLookup = method === DRAFT_SKILL_CANDIDATES_METHOD
+      if (skillLookup && pool?.getByServerId(hostId)?.identityPending === true) {
+        throw new NewConversationError(503, 'remote-connecting', 'Waiting for the selected Host to confirm its identity')
+      }
+      const relay = requireSessionHostRelay(pool, hostId)
+      const credentials = relay.lastHandshakeDigest
+      let interrupted = false
+      const unsubscribe = skillLookup ? relay.subscribe(state => { if (state !== 'online') interrupted = true }) : undefined
       try {
-        value = await relay.invoke('session', DRAFT_FILE_CANDIDATES_METHOD, { request }, signal)
+        value = await relay.invoke('session', method, { request }, signal)
+        if (skillLookup) {
+          const current = options.getPool()?.getByServerId(hostId)
+          if (interrupted || current?.identityPending === true || current?.client !== relay ||
+            relay.state !== 'online' || relay.lastHandshakeDigest !== credentials) {
+            throw new NewConversationError(503, 'remote-binding-changed', 'The selected Host connection changed')
+          }
+        }
       } catch (error) {
         // Older Hosts return the unregistered-method refusal for this dedicated invoke.
         if (error instanceof RelayError && (error.code === 'forbidden-method' || error.code === 'unsupported')) {
-          throw draftFileCandidatesUnsupported(error)
+          throw unsupported(error)
         }
         throw error
+      } finally {
+        unsubscribe?.()
       }
     }
-    if (!signal.aborted) responseJson(res, 200, { ok: true, value: draftFileCandidateRows(value) })
+    if (!signal.aborted) responseJson(res, 200, { ok: true, value: filter(value) })
   } finally {
     res.off('close', onClose)
   }
@@ -121,13 +142,24 @@ export function createNewConversationRoute(options: Options) {
       return
     }
     try {
-      const { hostId, request: incoming, fileCandidates, ...rest } = await bodyOf(req)
+      const { hostId, request: incoming, fileCandidates, skillCandidates, ...rest } = await bodyOf(req)
       if (typeof hostId !== 'string' || !/^(?:local|[a-f0-9]{8})$/u.test(hostId) || Object.keys(rest).length !== 0
-        || (incoming !== undefined && fileCandidates !== undefined)) {
+        || [incoming, fileCandidates, skillCandidates].filter(value => value !== undefined).length !== 1) {
         throw new NewConversationError(400, 'bad-request', 'Select the conversation Host and one draft operation')
       }
       if (fileCandidates !== undefined) {
-        await listDraftFileCandidates(options, hostId, fileCandidates, res)
+        const request = parseDraftFileCandidatesRequest(fileCandidates)
+        await lookupDraftCandidates(options, hostId, DRAFT_FILE_CANDIDATES_METHOD, request, res,
+          signal => options.listLocalDraftFileCandidates(request, signal), draftFileCandidateRows, draftFileCandidatesUnsupported)
+        return
+      }
+      if (skillCandidates !== undefined) {
+        const request = parseDraftSkillRequest(skillCandidates)
+        await lookupDraftCandidates(options, hostId, DRAFT_SKILL_CANDIDATES_METHOD, request, res,
+          signal => {
+            if (options.listLocalDraftSkillCandidates === undefined) throw draftSkillsUnsupported()
+            return options.listLocalDraftSkillCandidates(request, signal)
+          }, value => draftSkillRows(value, request), draftSkillsUnsupported)
         return
       }
       const request = parseNewConversationRequest(incoming)

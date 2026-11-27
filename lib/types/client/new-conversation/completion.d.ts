@@ -37,6 +37,12 @@ export declare function detectDraftCompletion(text: string, caret: number): Draf
 export declare function formatDraftFileMention(candidate: DraftFileCandidate, quoted: boolean, drill?: boolean): string | undefined;
 /** Encode the same JSON string and base64url payload as DSH's session URI. */
 export declare function formatDraftSessionMention({ id, label }: DraftCompletionSession): string;
+/** Make the selected skill match the Host's whitespace-bounded /name grammar. */
+export declare function replaceDraftSkill(text: string, token: DraftCompletionToken, name: string): {
+    caret: number;
+    text: string;
+};
+export declare function isDraftSkillReserved(name: string): boolean;
 /** Keep the suffix outside the native trigger span, including any existing separator. */
 export declare function replaceDraftCompletion(text: string, token: DraftCompletionToken, replacement: string, separate?: boolean): {
     text: string;

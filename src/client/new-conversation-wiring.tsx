@@ -9,6 +9,7 @@ import { createDraftImageStore, createPendingImageStorage, encodeDraftImage, typ
 import { NativeDraftComposer, NativeDraftTarget, NewConversationPanel, type ModelSelection, type NewConversationView, type SubmitInput } from './new-conversation/NewConversationPanel.tsx'
 import type { RemoteDirectoryListing, RemoteWorkspaceActions } from './new-conversation/RemoteWorkspaceDialog.tsx'
 import type { WorkspaceHostOperation } from '../client-data/workspace-host.ts'
+import type { DraftSkillCandidate } from '../client-data/draft-skills.ts'
 import type { DraftImagePart } from '../client-data/draft-images.ts'
 import { NewConversationTrigger } from './new-conversation/NewConversationTrigger.tsx'
 import { NEW_CONVERSATION_PANEL_ID, registerNewConversation, type NativeDraftNavigation } from './new-conversation/register.ts'
@@ -75,7 +76,7 @@ function copy(zh: boolean): NewConversationView['copy'] {
     imageEmpty: '图片内容为空，未能添加',
     imagePreviewFailed: '无法生成图片预览',
     imagesUnavailable: '所选 Host 的 Zen Remote 版本不支持首条消息附图。请移除图片或升级该 Host。',
-    ariaImages: '草稿图片', ariaRemoveImage: '移除图片 {name}',
+    ariaOpenFiles: '文件', ariaImages: '草稿图片', ariaRemoveImage: '移除图片 {name}',
     ariaImageScrollLeft: '向左滚动图片', ariaImageScrollRight: '向右滚动图片',
     ariaImagePreviewDialog: '原图预览', ariaImagePreviewClose: '关闭原图预览', ariaOpenOriginal: '查看原图',
     writeOrPasteFirst: '输入消息，使用 / 查看指令，使用 @ 引用',
@@ -87,7 +88,7 @@ function copy(zh: boolean): NewConversationView['copy'] {
     imageEmpty: 'The image is empty and could not be added',
     imagePreviewFailed: 'Could not preview the image',
     imagesUnavailable: 'This Host’s version of Zen Remote cannot send images in the first message. Remove the images or update the Host.',
-    ariaImages: 'Draft images', ariaRemoveImage: 'Remove image {name}',
+    ariaOpenFiles: 'File', ariaImages: 'Draft images', ariaRemoveImage: 'Remove image {name}',
     ariaImageScrollLeft: 'Scroll images left', ariaImageScrollRight: 'Scroll images right',
     ariaImagePreviewDialog: 'Original image preview', ariaImagePreviewClose: 'Close original image preview', ariaOpenOriginal: 'View original',
     writeOrPasteFirst: 'Write a message, use / for commands or @ for references',
@@ -592,6 +593,25 @@ export function mountNewConversation(ctx: ClientContext): ((workspaceId?: string
       drafts.write(current.hostId, current.workspaceId, text)
       publish()
       return true
+    },
+    async loadSkillCandidates(generation, preset, signal) {
+      const requested = target.state.getSnapshot()
+      const navigationAtRequest = draftNavigation
+      const choice = chosenPreset
+      const isCurrent = () => !disposed && isOpen() && draftNavigation === navigationAtRequest
+        && target.state.getSnapshot().generation === generation
+        && target.state.getSnapshot().catalogGeneration === requested.catalogGeneration
+        && (chosenPreset ?? presetRows.find(row => row.isDefault)?.id) === preset
+      if (!isCurrent()) return []
+      const candidates = await call<readonly DraftSkillCandidate[]>(CREATE, {
+        hostId: requested.hostId,
+        skillCandidates: {
+          ...(requested.workspaceId === undefined ? {} : { workspaceId: requested.workspaceId }),
+          ...(choice === undefined ? {} : { agentPreset: choice }),
+        },
+      }, signal)
+      signal.throwIfAborted()
+      return isCurrent() ? candidates : []
     },
     async loadFileCandidates(generation, query, signal) {
       const requested = target.state.getSnapshot()

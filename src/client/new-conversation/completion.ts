@@ -80,6 +80,21 @@ export function formatDraftSessionMention({ id, label }: DraftCompletionSession)
   return `@[${label.replace(/[\\\]]/gu, '\\$&')}](dsh-session:${payload})`
 }
 
+/** Make the selected skill match the Host's whitespace-bounded /name grammar. */
+export function replaceDraftSkill(text: string, token: DraftCompletionToken, name: string) {
+  const { start } = token.span
+  const suffix = /^[a-z0-9-]*/iu.exec(text.slice(token.span.end))?.[0] ?? ''
+  const end = token.span.end + suffix.length
+  const prefix = start === 0 || WHITESPACE.test(text.charAt(start - 1)) ? '' : ' '
+  const separator = WHITESPACE.test(text.charAt(end)) ? '' : ' '
+  const next = replaceDraftCompletion(text, { ...token, span: { start, end } }, `${prefix}/${name}${separator}`)
+  return { ...next, caret: next.caret + (text.charAt(end) === ' ' ? 1 : 0) }
+}
+
+export function isDraftSkillReserved(name: string): boolean {
+  return name === 'file' || name === 'model' || SESSION_ONLY_COMMANDS.some(command => command.name === name)
+}
+
 /** Keep the suffix outside the native trigger span, including any existing separator. */
 export function replaceDraftCompletion(text: string, token: DraftCompletionToken, replacement: string, separate = false) {
   const { start, end } = token.span

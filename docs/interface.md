@@ -87,7 +87,9 @@ DSH 原生侧边栏在会话时间之后和置顶标记之前显示 14 px 图标
 
 ### 新建会话草稿的补全
 
-草稿里的 `/model` 打开当前 Host 的模型选择器。`/file` 打开图片附件选择器，支持 PNG、JPG、WebP 和 GIF。通过 `@` 引用 Workspace 内的文件时，文件查询由所选 Host 在选定的 Workspace 内执行。`/compact`、`/export`、`/rewind` 和 `/undo` 需要先打开会话。技能目录也在绑定会话后按实际 Agent preset 提供。
+草稿里的 `/model` 打开当前 Host 的模型选择器。“文件”（`/file`）打开系统文件选择器，可附加 PNG、JPG、WebP 和 GIF。通过 `@` 引用 Workspace 内的文件时，文件查询由所选 Host 在选定的 Workspace 内执行。`/compact`、`/export`、`/rewind` 和 `/undo` 需要先打开会话。
+
+支持草稿技能预览的 Host 会按所选 Agent preset 提供用户可调用的全局技能，选择 Workspace 后也会列出该 Workspace 内的项目技能。同名项按 Host 的技能解析顺序显示胜出项。选中技能只在草稿中插入 `/技能名`，发送首条消息时由目标 Host 重新解析并加载。远程技能目录要求设备已完成桌面配对且目标 Host 至少有一个共享会话，响应只包含名称和来源类别。
 
 在本机草稿中输入 `@`，未选 Workspace 时可搜索本机列表中可引用的会话，选定后仅建议该 Workspace 的会话。发送首条消息仍需选定 Workspace。远程草稿的首条消息支持文件引用，已共享会话的引用可在会话创建后发送。
 

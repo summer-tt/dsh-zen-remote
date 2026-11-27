@@ -36,6 +36,7 @@ import { promisify } from 'node:util'
 import { gzip } from 'node:zlib'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { NewConversationError, isManagedConversation } from './new-conversation/index.js'
+import { DRAFT_SKILL_CANDIDATES_METHOD, draftSkillRows, draftSkillsUnsupported, parseDraftSkillRequest, type ListDraftSkillCandidates } from './new-conversation/draft-skill-candidates.js'
 import {
   DRAFT_FILE_CANDIDATES_METHOD, draftFileCandidateRows, draftFileCandidatesUnsupported, parseDraftFileCandidatesRequest,
   type ListDraftFileCandidates,
@@ -294,6 +295,7 @@ export interface RelayHandlerOptions {
   createWithFirstMessage?: (device: string, request: unknown, authorize: () => void) => Promise<{ sessionId: string }>
   /** List read-only Workspace paths on behalf of an authenticated paired device. */
   listDraftFileCandidates?: ListDraftFileCandidates
+  listDraftSkillCandidates?: ListDraftSkillCandidates
   /** Ancestor lookup for subagent reachability; defaults to "no parent". */
   parentOf?: (id: string) => string | undefined
   /** The host's `/api` shared-fetch dispatcher (T41b), probed lazily per
@@ -1928,8 +1930,9 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
       }
       const isDraftSubmission = namespace === 'session' && method === 'createWithFirstMessage'
       const isDraftFileCandidates = namespace === 'session' && method === DRAFT_FILE_CANDIDATES_METHOD
+      const isDraftSkillCandidates = namespace === 'session' && method === DRAFT_SKILL_CANDIDATES_METHOD
       const isMagpieControls = namespace === 'session' && method === MAGPIE_CONTROLS_METHOD
-      const decision = isDraftSubmission || isDraftFileCandidates || isMagpieControls
+      const decision = isDraftSubmission || isDraftFileCandidates || isDraftSkillCandidates || isMagpieControls
         ? { allow: true as const, filter: undefined }
         : decideInvoke(namespace, method, args, isAccessible)
       if (!decision.allow) {
@@ -1992,6 +1995,21 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
           }
           const body = await readMagpieControlsResponse(upstream, hangUp.signal)
           if (!hangUp.signal.aborted) responseJson(res, 200, { ok: true, value: { status: upstream.status, body } })
+          return
+        }
+        if (isDraftSkillCandidates) {
+          // Match the existing remote preset catalog disclosure boundary.
+          if (device === '' || store.list().length === 0) throw new NewConversationError(403, 'forbidden', 'Draft skill discovery requires a paired device and a shared session')
+          if (options.listDraftSkillCandidates === undefined) throw draftSkillsUnsupported()
+          if (!isPlainObject(args) || Object.keys(args).some(key => key !== 'request')) {
+            throw new NewConversationError(400, 'bad-request', 'Invalid draft skill candidates invocation')
+          }
+          const request = parseDraftSkillRequest(args.request)
+          hangUp.signal.throwIfAborted()
+          const value = await options.listDraftSkillCandidates(request, hangUp.signal)
+          if (hangUp.signal.aborted) return
+          if (store.list().length === 0) throw new NewConversationError(403, 'forbidden', 'Draft skill discovery is no longer shared')
+          responseJson(res, 200, { ok: true, value: draftSkillRows(value, request) })
           return
         }
         if (isDraftFileCandidates) {
@@ -2211,9 +2229,11 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
         // like every other result, with the gateway's string code preserved.
         if (isMagpieControls) {
           if (!res.destroyed && !hangUp.signal.aborted) responseJson(res, 502, { ok: false, error: { code: 'internal' } })
+        } else if (isDraftSkillCandidates && !(error instanceof NewConversationError)) {
+          if (!res.destroyed) responseJson(res, 503, { ok: false, error: { code: 'draft-skills-unavailable' } })
         } else if (isDraftFileCandidates && !(error instanceof NewConversationError)) {
           if (!res.destroyed) responseJson(res, 500, { ok: false, error: { code: 'draft-file-candidates-failed' } })
-        } else if ((isDraftSubmission || isDraftFileCandidates) && error instanceof NewConversationError) {
+        } else if ((isDraftSubmission || isDraftFileCandidates || isDraftSkillCandidates) && error instanceof NewConversationError) {
           if (!res.destroyed) responseJson(res, error.status, { ok: false, error: { code: error.code } })
         } else {
           await responseCompressedJson(req, res, 200, errorEnvelopeOf(error))

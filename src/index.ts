@@ -54,6 +54,7 @@ import { createShareStore } from './share-store.js'
 import { createRelayPool } from './relay-pool.js'
 import { ensurePeerIdentity, readPeerNetwork } from './state-store.js'
 import { NewConversationHost, NewConversationError, isManagedConversation, parseNewConversationRequest, saveRecentConversationHost } from './new-conversation/index.js'
+import { createDraftSkillCandidates } from './new-conversation/draft-skill-candidates.js'
 import { createDraftFileCandidates } from './new-conversation/draft-file-candidates.js'
 import { createNewConversationRoute, NEW_CONVERSATION_ROUTE } from './new-conversation-routes.js'
 import { createRemoteModelControlsRoute, REMOTE_MODEL_CONTROLS_ROUTE } from './magpie-controls.js'
@@ -877,6 +878,7 @@ export function apply(ctx: Context, config: MobileNavConfig = {}): void {
   const listDraftFileCandidates = createDraftFileCandidates(
     () => getHostService('workspaceRegistry') as ReturnType<Parameters<typeof createDraftFileCandidates>[0]>,
   )
+  const listDraftSkillCandidates = createDraftSkillCandidates(() => getHostService('sessionSkillCatalog'))
   let publishNewRemoteSession = (_sessionId: string): void => {}
   let submitLocalConversation: Parameters<typeof createNewConversationRoute>[0]['submitLocal'] =
     request => newConversation.submit('local-owner', request)
@@ -899,6 +901,7 @@ export function apply(ctx: Context, config: MobileNavConfig = {}): void {
         saveRecentHost: hostId => saveRecentConversationHost(ctx as unknown as Parameters<typeof saveRecentConversationHost>[0], hostId),
         submitLocal: request => submitLocalConversation(request),
         listLocalDraftFileCandidates: listDraftFileCandidates,
+        listLocalDraftSkillCandidates: listDraftSkillCandidates,
         onRemoteCreated: sessionId => publishNewRemoteSession(sessionId),
       }),
     }), 'dsh-zen-remote: new conversation')
@@ -1516,6 +1519,7 @@ export function apply(ctx: Context, config: MobileNavConfig = {}): void {
             return picker?.capability().kind === 'browse'
           },
           listDraftFileCandidates,
+          listDraftSkillCandidates,
           createWithFirstMessage(device, incoming, authorize) {
             const request = parseNewConversationRequest(incoming)
             return newConversation.submit(`paired-device:${device}`, request, {

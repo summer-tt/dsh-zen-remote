@@ -142,6 +142,7 @@ export interface NewConversationCopy {
     /** Spoken name of the model seat's trigger when the wiring mounts no picker node. */
     readonly ariaOpenModelPicker: string;
     /** Spoken name of the thumbnail rail group. */
+    readonly ariaOpenFiles: string;
     readonly ariaImages: string;
     /** Spoken name of one image's remove button; `{name}` is replaced. */
     readonly ariaRemoveImage: string;
@@ -250,6 +251,7 @@ export interface NewConversationPanelActions {
     readonly remoteWorkspace?: (hostId: HostId, generation: number) => RemoteWorkspaceActions;
     readonly onSelectPreset?: (id: string) => void;
     readonly onTextChange: (text: string, expectedGeneration?: number, expectedText?: string) => boolean;
+    readonly loadSkillCandidates: (generation: number, preset: string | undefined, signal: AbortSignal) => Promise<readonly import('../../client-data/draft-skills.ts').DraftSkillCandidate[]>;
     readonly loadFileCandidates: (generation: number, query: string, signal: AbortSignal) => Promise<readonly DraftFileCandidate[]>;
     /**
      * Add pasted image files to the current draft. `generation` names the

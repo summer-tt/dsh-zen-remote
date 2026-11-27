@@ -157,6 +157,7 @@ export interface NewConversationCopy {
   /** Spoken name of the model seat's trigger when the wiring mounts no picker node. */
   readonly ariaOpenModelPicker: string
   /** Spoken name of the thumbnail rail group. */
+  readonly ariaOpenFiles: string
   readonly ariaImages: string
   /** Spoken name of one image's remove button; `{name}` is replaced. */
   readonly ariaRemoveImage: string
@@ -264,6 +265,7 @@ export interface NewConversationPanelActions {
   readonly remoteWorkspace?: (hostId: HostId, generation: number) => RemoteWorkspaceActions
   readonly onSelectPreset?: (id: string) => void
   readonly onTextChange: (text: string, expectedGeneration?: number, expectedText?: string) => boolean
+  readonly loadSkillCandidates: (generation: number, preset: string | undefined, signal: AbortSignal) => Promise<readonly import('../../client-data/draft-skills.ts').DraftSkillCandidate[]>
   readonly loadFileCandidates: (generation: number, query: string, signal: AbortSignal) => Promise<readonly DraftFileCandidate[]>
   /**
    * Add pasted image files to the current draft. `generation` names the
@@ -984,7 +986,7 @@ export function NewConversationComposer({ useView, actions, legacy = false }: Ne
             type="button"
             className="zr-newc-submit"
             data-zen-remote="new-conversation-submit"
-            aria-label={submitting ? copy.submitting : bareModel ? copy.openModelPicker : bareFile ? copy.ariaImages : pending ? copy.retrySubmission : copy.submit}
+            aria-label={submitting ? copy.submitting : bareModel ? copy.openModelPicker : bareFile ? copy.ariaOpenFiles : pending ? copy.retrySubmission : copy.submit}
             aria-busy={submitting}
             disabled={block !== null || (bareFile && pickImages === undefined) || submitting}
             {...(block !== null && block !== copy.writeFirstMessage && !submitting ? { 'aria-describedby': hintId } : {})}

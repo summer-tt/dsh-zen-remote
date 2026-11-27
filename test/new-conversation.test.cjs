@@ -7,6 +7,7 @@ const { test } = require('node:test')
 const { createServer } = require('node:http')
 const { createRelayHandler } = require('../lib/relay-server.js')
 const { createNewConversationRoute, NEW_CONVERSATION_ROUTE } = require('../lib/new-conversation-routes.js')
+const { createDraftSkillCandidates } = require('../lib/new-conversation/draft-skill-candidates.js')
 const { createDraftFileCandidates } = require('../lib/new-conversation/draft-file-candidates.js')
 const { RelayError } = require('../lib/relay-client.js')
 const { toVirtual } = require('../lib/virtual-id.js')
@@ -591,6 +592,82 @@ test('the specialized relay lookup checks device authentication and cancels on d
   controller.abort()
   await Promise.all([result, probe.closed])
   assert.deepEqual(await invoke(), { status: 200, body: { ok: true, value: candidates } })
+})
+
+test('draft skills use the trusted Core catalog and return only names and scopes', async () => {
+  const rows = [
+    { name: 'global-skill', scope: 'user', path: '/private', description: 'private description', content: 'private skill' },
+    { name: 'project-skill', scope: 'project' }, { name: 'global-skill', scope: 'project' },
+    { name: 'a/b', scope: 'user' }, { name: 'builtin', scope: 'bundled' },
+  ]
+  const ops = []
+  const lookup = createDraftSkillCandidates(() => ({ async previewDraft(input, signal) {
+    ops.push(input)
+    assert.equal(signal.aborted, false)
+    if (input.workspaceId === 'unknown') throw Object.assign(new Error('/private'), { code: 'DRAFT_SKILL_INVALID_WORKSPACE' })
+    return { skills: rows }
+  } }))
+  const signal = new AbortController().signal
+  assert.deepEqual(await lookup({}, signal), [{ name: 'global-skill', scope: 'user' }])
+  assert.deepEqual(await lookup({ workspaceId: 'work', agentPreset: 'standard' }, signal), [
+    { name: 'global-skill', scope: 'user' }, { name: 'project-skill', scope: 'project' },
+  ])
+  await assert.rejects(lookup({ workspaceId: 'unknown' }, signal), { code: 'workspace-not-found', status: 404 })
+  await assert.rejects(createDraftSkillCandidates(() => undefined)({}, signal), { code: 'draft-skills-unsupported' })
+  assert.deepEqual(ops, [{}, { workspaceId: 'work', agentPreset: 'standard' }, { workspaceId: 'unknown' }])
+})
+
+test('draft skill relay requires sharing, filters output, and rechecks disclosure after the lookup', { timeout: 5000 }, async (t) => {
+  const { directory } = await fixture(t)
+  const store = createShareStore({ file: join(directory, 'skill-shares.json'), idleHours: 48 })
+  const secret = 'b'.repeat(64)
+  const auth = { 'x-zen-remote-secret': secret, 'x-zen-remote-via': 'gateway',
+    'x-zen-remote-role': 'desktop-client', 'x-zen-remote-device': 'device' }
+  const calls = []
+  const handler = createRelayHandler({ secret, store,
+    serverInfo: { serverId: 'aaaaaaaa', serverName: () => 'test', dshVersion: 'test' },
+    gateway: { invoke() { assert.fail('forwarded to the native gateway') } },
+    async listDraftSkillCandidates(input) {
+      calls.push(input)
+      if (input.agentPreset === 'revoke') store.unshare('shared', 'manual')
+      return [{ name: 'global-skill', scope: 'user', path: '/private' }, { name: 'project-skill', scope: 'project' }]
+    },
+  })
+  const origin = await listenForDraftRequests(t, handler)
+  const lookup = (request, headers = auth) => postDraftLookup(origin + '/_dsh/zen-remote/relay/v1/invoke',
+    { namespace: 'session', method: 'draftSkillCandidates', args: { request } }, headers)
+  assert.equal((await lookup({}, { ...auth, 'x-zen-remote-role': 'browser' })).status, 401)
+  assert.equal((await lookup({})).status, 403)
+  store.share('shared')
+  assert.equal((await lookup({ cwd: '/private' })).status, 400)
+  assert.deepEqual(calls, [])
+  assert.deepEqual(await lookup({}), { status: 200, body: { ok: true, value: [{ name: 'global-skill', scope: 'user' }] } })
+  assert.deepEqual(await lookup({ workspaceId: 'work' }), { status: 200, body: { ok: true, value: [
+    { name: 'global-skill', scope: 'user' }, { name: 'project-skill', scope: 'project' },
+  ] } })
+  assert.equal((await lookup({ agentPreset: 'revoke' })).status, 403)
+})
+
+test('draft skill HTTP lookup discards a response from a replaced Host connection', { timeout: 5000 }, async (t) => {
+  const input = { workspaceId: 'work', agentPreset: 'standard' }
+  const relay = { state: 'online', handshakeInfo: { serverId: 'aaaaaaaa' }, lastHandshakeDigest: 'first',
+    subscribe: () => () => {}, async invoke(namespace, method, args) {
+      assert.deepEqual([namespace, method, args], ['session', 'draftSkillCandidates', { request: input }])
+      relay.lastHandshakeDigest = 'second'
+      return [{ name: 'stale-skill', scope: 'user' }]
+    },
+  }
+  const origin = await listenForDraftRequests(t, createNewConversationRoute({
+    admit: () => ({}), getPool: () => ({ getByServerId: id => id === 'aaaaaaaa' ? { entryId: id, client: relay } : undefined, isVirtual: () => false }),
+    getRecentHost: () => 'local', saveRecentHost: () => assert.fail('saved a Host preference'),
+    submitLocal: () => assert.fail('created a conversation'), onRemoteCreated: () => assert.fail('published a session'),
+  }))
+  const url = origin + NEW_CONVERSATION_ROUTE
+  assert.deepEqual(await postDraftLookup(url, { hostId: 'aaaaaaaa', skillCandidates: input }), {
+    status: 503, body: { ok: false, error: { code: 'remote-binding-changed' } },
+  })
+  assert.equal((await postDraftLookup(url, { hostId: 'bbbbbbbb', skillCandidates: input })).status, 404)
+  assert.equal((await postDraftLookup(url, { hostId: 'aaaaaaaa', skillCandidates: input, request })).status, 400)
 })
 
 test('updates just the current profile row preference through the config editor', async () => {
