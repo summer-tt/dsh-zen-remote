@@ -57,6 +57,9 @@ function failureOf(error: unknown, fallback: OperationFailure): Feedback {
 }
 
 export function remoteWorkspaceError(error: unknown, operation: OperationFailure, zh: boolean): string {
+  if (operation === 'createFailed' && error instanceof Error && error.message === 'bad-request') {
+    return zh ? '请输入单个文件夹名称。' : 'Enter a single folder name.'
+  }
   return remoteWorkspaceCopy(zh)[failureOf(error, operation)]
 }
 

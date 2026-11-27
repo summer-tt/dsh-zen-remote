@@ -49,7 +49,7 @@ export function NativeRemoteWorkspaceDialog({ host, zh, actions, available, onCl
     <Modal open={error !== null} title={words.title} closeLabel={words.close} onClose={onClose}
       footer={<>
         <Button variant="outline" onClick={onClose}>{words.cancel}</Button>
-        <Button variant="primary" onClick={() => setError(null)}>{words.retry}</Button>
+        <Button variant="primary" onClick={() => setError(null)}>{zh ? '重新选择' : 'Choose again'}</Button>
       </>}>
       <p role="alert">{error}</p>
     </Modal>
