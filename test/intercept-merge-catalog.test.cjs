@@ -1506,6 +1506,66 @@ test('T75: first serving period hydrates rows silently, reconnect delivers real 
   await iterator.return?.(undefined)
 })
 
+test('T75: a session absent from a complete reconnect list gets a fresh baseline when shared again', async () => {
+  const relay = offlineRelayWithRows()
+  const { iterator, localGate } = await openMergedEvents(relay)
+  localGate.push(READY)
+  await readSome(iterator, 1)
+  relay.transition('online')
+  await readSome(iterator, 3)
+
+  relay.transition('offline')
+  relay.invokeValues['session/list'] = { items: [T75_ROWS[1]] }
+  relay.transition('online')
+  const [removedRefresh, removed] = await readSome(iterator, 2)
+  assert.equal(removedRefresh.event, 'llm/adapters-updated')
+  assert.deepEqual(removed, { type: 'emit', event: 'api-session/removed', args: [toVirtual(SERVER_ID, 'session-shared')] })
+
+  relay.transition('offline')
+  relay.invokeValues['session/list'] = { items: T75_ROWS.map(row => ({ ...row, running: false })) }
+  relay.transition('online')
+  const [refresh, added] = await readSome(iterator, 2)
+  assert.equal(refresh.event, 'llm/adapters-updated')
+  assert.equal(added.event, 'api-session/added')
+  assert.equal(added.args[0].sessionId, toVirtual(SERVER_ID, 'session-shared'))
+  assert.equal(added.args[0].running, false)
+  await iterator.return?.(undefined)
+})
+
+test('T75: a reconnect snapshot corrects an older first summary without fabricating a completion', async () => {
+  const relay = offlineRelayWithRows()
+  const pending = []
+  const invoke = relay.invoke
+  relay.invoke = function (namespace, method, ...args) {
+    if (namespace === 'session' && method === 'list') {
+      return new Promise(resolve => { pending.push(resolve) })
+    }
+    return invoke.call(this, namespace, method, ...args)
+  }
+  const { iterator, localGate } = await openMergedEvents(relay)
+  localGate.push(READY)
+  await readSome(iterator, 1)
+  relay.transition('online')
+  await readSome(iterator, 1)
+  await waitUntil(() => pending.length === 2)
+  pending[0]({ items: T75_ROWS })
+  relay.transition('offline')
+  relay.transition('online')
+  await readSome(iterator, 1)
+  await waitUntil(() => pending.length === 3)
+
+  // The newer status pull sees the formerly idle row now running. The first
+  // summary is still pending and must not announce it as idle afterwards.
+  pending[2]({ items: T75_ROWS.map(row => ({ ...row, running: true })) })
+  await flushAsync()
+  pending[1]({ items: T75_ROWS })
+  const added = await readSome(iterator, 2)
+  assert.deepEqual(added.map(frame => [frame.event, frame.args[0].running]), [
+    ['api-session/added', true], ['api-session/added', true],
+  ])
+  await iterator.return?.(undefined)
+})
+
 test('T75: a real-time status frame that lands mid-fetch outranks the list snapshot', async () => {
   const relay = offlineRelayWithRows()
   // The status sync's session/list fetch hangs until released — the window
@@ -1538,11 +1598,9 @@ test('T75: a real-time status frame that lands mid-fetch outranks the list snaps
   assert.deepEqual(live, { type: 'emit', event: 'api-session/status', args: [toVirtual(SERVER_ID, 'session-shared'), false] })
 
   releaseList()
-  // A realigning status frame follows the stale added row. The idle row
-  // only gets an added frame, and the live session gets no stale status.
-  const added = await readSome(iterator, 3)
-  assert.deepEqual(added.map((frame) => frame.event), ['api-session/added', 'api-session/status', 'api-session/added'])
-  assert.deepEqual(added[1].args, [toVirtual(SERVER_ID, 'session-shared'), false], 'the realign carries the LIVE value, not the snapshot\'s')
+  const added = await readSome(iterator, 2)
+  assert.deepEqual(added.map(frame => frame.event), ['api-session/added', 'api-session/added'])
+  assert.equal(added[0].args[0].running, false, 'the initial row already carries the live value')
   await iterator.return?.(undefined)
 })
 
@@ -1598,7 +1656,7 @@ function onlineRelayWithHangingList(rows) {
   return { relay, release: () => release(), listCalls }
 }
 
-test('PB-26a: a real-time status for an UNANNOUNCED remote session (a sidechat child rides no workspace/follow frame) pulls session/list and announces the row; a flip during the pull is re-pushed right after the added frame', async () => {
+test('PB-26a: a real-time status for an UNANNOUNCED remote session (a sidechat child rides no workspace/follow frame) pulls session/list and announces the row; the added frame carries a flip that arrived during the pull', async () => {
   // The child's row as the server lists it AFTER the pull began: still
   // `running: true` from the snapshot's point of view.
   const { relay, release, listCalls } = onlineRelayWithHangingList([{ sessionId: 'session-side-1', updatedAt: 7, running: true }])
@@ -1625,13 +1683,11 @@ test('PB-26a: a real-time status for an UNANNOUNCED remote session (a sidechat c
   assert.deepEqual(liveFalse, { type: 'emit', event: 'api-session/status', args: [V_SIDE_1, false] })
   assert.equal(listCalls(), 1, 'no second pull while the first is in flight')
 
-  // The snapshot lands: the row is announced with the snapshot's stale
-  // `running: true` — and the latest LIVE value follows immediately, so the
-  // host's mergeSummary never leaves the row marked running.
+  // The initial row carries the latest live value without introducing a
+  // stale running flag between the completion and the corrected summary.
   release()
-  const [added, realigned] = await readSome(iterator, 2)
-  assert.deepEqual(added, { type: 'emit', event: 'api-session/added', args: [{ sessionId: V_SIDE_1, updatedAt: 7, running: true }] })
-  assert.deepEqual(realigned, { type: 'emit', event: 'api-session/status', args: [V_SIDE_1, false] })
+  const [added] = await readSome(iterator, 1)
+  assert.deepEqual(added, { type: 'emit', event: 'api-session/added', args: [{ sessionId: V_SIDE_1, updatedAt: 7, running: false }] })
 
   // The queued follow-up round pulls once more (its snapshot is fresh) and
   // announces nothing new; the stream stays otherwise silent.
