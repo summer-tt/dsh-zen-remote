@@ -40,7 +40,7 @@ import {
 } from '../src/client-data/plugin-bridge.ts'
 import { BRIDGE_STAMP_PLUGIN, parseRemoteStatusBody } from '../src/client-data/remote-status.ts'
 import {
-  createHostAppearanceStore, hostDisplayName, hostIdOfSession, parseHostAppearance, resolveHostStyle,
+  createHostAppearanceStore, hostDisplayName, visibleSessionHostId, parseHostAppearance, resolveHostStyle,
 } from '../src/client-data/session-host-appearance.ts'
 
 const NOW = 1_700_000_000_000
@@ -1266,12 +1266,12 @@ test('T6 derivePeerStatusView: parses versionSync tolerantly and ignores absent/
 
 test('host appearance keeps ownership and color through roster name and state changes', () => {
   const sessionId = 'zr~aaaa1111~session-test'
-  const hostId = hostIdOfSession(sessionId, 'sidebar')
   const defaults = parseHostAppearance(undefined)
+  const hostId = visibleSessionHostId(defaults, sessionId, 'sidebar')
   assert.equal(hostId, 'aaaa1111')
-  assert.equal(hostIdOfSession(sessionId, 'header'), hostId)
-  assert.equal(hostIdOfSession('local-session', 'header'), undefined)
-  assert.equal(hostIdOfSession('local-session', 'sidebar'), 'local')
+  assert.equal(visibleSessionHostId(defaults, sessionId, 'header'), hostId)
+  assert.equal(visibleSessionHostId(defaults, 'local-session', 'header'), undefined)
+  assert.equal(visibleSessionHostId(defaults, 'local-session', 'sidebar'), 'local')
   assert.deepEqual(resolveHostStyle(defaults, 'local'), { color: 'gray', icon: 'monitor' })
   const before = resolveHostStyle(defaults, hostId)
   assert.equal(before.icon, 'server')
@@ -1318,4 +1318,31 @@ test('profile host appearance publishes committed changes and reset on the share
     form.dispose()
     detach()
   }
+})
+
+
+test('sidebar hover shares the sidebar visibility setting and omits blank rows', () => {
+  const sessionId = 'zr~aaaa1111~session-test'
+  const defaults = parseHostAppearance(undefined)
+  assert.equal(visibleSessionHostId(defaults, sessionId, 'sidebar', true), undefined)
+  assert.equal(visibleSessionHostId(defaults, 'local-session', 'sidebar', true), undefined)
+  assert.equal(visibleSessionHostId(defaults, sessionId, 'sidebar', false), 'aaaa1111')
+  assert.equal(visibleSessionHostId(parseHostAppearance({ enabled: false }), sessionId, 'sidebar'), undefined)
+  assert.equal(visibleSessionHostId(parseHostAppearance({ sidebar: false }), sessionId, 'sidebar'), undefined)
+  assert.equal(visibleSessionHostId(parseHostAppearance({ header: false }), sessionId, 'sidebar'), 'aaaa1111')
+})
+
+test('sidebar hover names the owning host and disambiguates older rosters', () => {
+  const status = parseRemoteStatusBody({ serverName: 'First server', servers: {
+    aaaa1111: { state: 'offline', serverName: ' Studio ' },
+    bbbb2222: { state: 'online', serverName: 'Studio' },
+    cccc3333: { state: 'online', serverName: 'Local' },
+    dddd4444: { state: 'offline', displayName: '  ', serverName: '  ' },
+  } }, NOW)
+  assert.equal(hostDisplayName('local', status, 'Local'), 'Local')
+  assert.equal(hostDisplayName('aaaa1111', status, 'Local'), 'Studio (aaaa1111)')
+  assert.equal(hostDisplayName('bbbb2222', status, 'Local'), 'Studio (bbbb2222)')
+  assert.equal(hostDisplayName('cccc3333', status, 'Local'), 'Local (cccc3333)')
+  assert.equal(hostDisplayName('dddd4444', status, 'Local'), 'dddd4444')
+  assert.equal(hostDisplayName('eeee5555', status, 'Local'), 'eeee5555')
 })

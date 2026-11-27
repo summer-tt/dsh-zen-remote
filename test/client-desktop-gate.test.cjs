@@ -163,6 +163,28 @@ test('apply order guard: registerSettingsPage, registerRemoteShareUi, registerRe
   assert.equal(injectMatch[1].includes('configForms'), false)
 })
 
+test('session ownership uses the native sidebar trailing and hover slots', async () => {
+  const { createHostAppearanceStore } = await import('../src/client-data/session-host-appearance.ts')
+  const { registerSessionHostIcons } = await import('../src/client/session-host-register.ts')
+  const { ctx, calls } = fakeCtx()
+  const appearance = createHostAppearanceStore()
+  const sidebar = () => null
+  const header = () => null
+  const hover = () => null
+  registerSessionHostIcons(ctx, appearance, sidebar, header, hover)
+  const byName = new Map(calls.slotsRegistered.map(entry => [entry.options.name, entry]))
+  assert.deepEqual([...byName.keys()], [
+    'sidebar.session.row.trailing', 'sidebar.session.row.hover', 'conversation.session.header.actions',
+  ])
+  assert.equal(byName.get('sidebar.session.row.trailing').component, sidebar)
+  assert.equal(byName.get('sidebar.session.row.hover').component, hover)
+  assert.equal(byName.get('conversation.session.header.actions').component, header)
+  for (const { options } of byName.values()) {
+    assert.equal(options.inject().appearance, appearance)
+    assert.equal(options.locale, 'mobileNav')
+  }
+})
+
 test('T33b: desktop shell — the remote icon and menu item still register (both slots + styles)', async () => {
   globalThis.dshDesktop = {}
   try {

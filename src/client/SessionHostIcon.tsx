@@ -2,7 +2,7 @@ import { useMemo, useSyncExternalStore, type CSSProperties } from 'react'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import { getRemoteStatusStore } from '../client-data/remote-status.ts'
 import {
-  hostDisplayName, hostIdOfSession, resolveHostStyle, type HostAppearanceStore, type HostColor, type HostIcon,
+  hostDisplayName, visibleSessionHostId, resolveHostStyle, type HostAppearanceStore, type HostColor, type HostIcon,
 } from '../client-data/session-host-appearance.ts'
 import { NS } from './locales.ts'
 
@@ -75,8 +75,8 @@ function NamedHostGlyph({ hostId, style, surface, t }: {
 
 function SessionHostIcon({ appearance, sessionId, surface, t }: SessionHostIconProps & { surface: 'sidebar' | 'header' }) {
   const config = useSyncExternalStore(appearance.subscribe, appearance.getSnapshot)
-  const hostId = hostIdOfSession(sessionId, surface)
-  if (hostId === undefined || !config.enabled || !config[surface]) return null
+  const hostId = visibleSessionHostId(config, sessionId, surface)
+  if (hostId === undefined) return null
   return <NamedHostGlyph hostId={hostId} style={resolveHostStyle(config, hostId)} surface={surface} t={t} />
 }
 
@@ -97,8 +97,9 @@ export type SidebarSessionHostHoverProps = SessionHostIconProps & PropsRuntime<'
 
 export function SidebarSessionHostHover({ appearance, sessionId, useSessions, t }: SidebarSessionHostHoverProps) {
   const config = useSyncExternalStore(appearance.subscribe, appearance.getSnapshot)
-  const hasContent = useSessions(sessions => sessions.byId[sessionId]?.blank === false)
-  const hostId = hostIdOfSession(sessionId, 'sidebar')
-  if (!config.enabled || !config.sidebar || !hasContent || hostId === undefined) return null
+  const blank = useSessions(sessions => sessions.byId[sessionId]?.blank !== false)
+  // The trailing slot omits blank rows, but the host may still open their hover card.
+  const hostId = visibleSessionHostId(config, sessionId, 'sidebar', blank)
+  if (hostId === undefined) return null
   return <HostHoverLabel hostId={hostId} t={t} />
 }

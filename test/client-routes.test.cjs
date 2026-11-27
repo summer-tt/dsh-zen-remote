@@ -2246,13 +2246,15 @@ test('MS-5 status pool mode: the row credentials are never consulted, the pool i
   }
 })
 
-test('MS-5 remote-status pool mode: per-serverId map with state/versionMismatch/serverName/bridgedPlugins', async () => {
+test('MS-5 remote-status pool mode: reports display names for the owning serverId', async () => {
   const entries = [
     makeEntry('e1', 'abcd1234', 'http://10.0.0.1:3080', 'A', {
       compat: { identical: [], different: ['g9'], unavailable: [] },
+      displayName: 'A-1',
     }),
-    makeEntry('e2', 'ffffffff', 'http://10.0.0.2:3080', 'B', { state: 'revoked', serverNameView: 'B' }),
+    makeEntry('e2', 'ffffffff', 'http://10.0.0.2:3080', 'A', { state: 'revoked', displayName: 'A-2' }),
     makeEntry('e3', undefined, 'http://10.0.0.3:3080', 'C', { state: 'connecting', serverIdView: undefined, serverNameView: 'C' }),
+    makeEntry('e4', '01234567', 'http://10.0.0.4:3080', '', { state: 'offline', displayName: 'http://10.0.0.4:3080' }),
   ]
   const bridgeFor = (serverId) => (
     serverId === 'abcd1234'
@@ -2267,8 +2269,9 @@ test('MS-5 remote-status pool mode: per-serverId map with state/versionMismatch/
     assert.equal(res.status, 200)
     const body = JSON.parse(res.body)
     assert.deepEqual(body.servers, {
-      abcd1234: { state: 'online', versionMismatch: true, serverName: 'A', displayName: 'A', bridgedPlugins: ['aaa-first', 'zzz-later'] },
-      ffffffff: { state: 'revoked', versionMismatch: false, serverName: 'B', displayName: 'B', bridgedPlugins: [] },
+      abcd1234: { state: 'online', versionMismatch: true, serverName: 'A', displayName: 'A-1', bridgedPlugins: ['aaa-first', 'zzz-later'] },
+      ffffffff: { state: 'revoked', versionMismatch: false, serverName: 'A', displayName: 'A-2', bridgedPlugins: [] },
+      '01234567': { state: 'offline', versionMismatch: false, serverName: '', displayName: '01234567', bridgedPlugins: [] },
     }, 'an entry without a handshake serverId is not addressable and is skipped')
     // The top-level compatibility fields survive, mirroring the FIRST entry.
     assert.equal(body.state, 'online')

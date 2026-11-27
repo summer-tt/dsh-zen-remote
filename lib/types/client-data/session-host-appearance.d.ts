@@ -17,7 +17,7 @@ export interface HostAppearance {
 }
 export declare function isSessionHostId(id: string): boolean;
 export declare function parseHostAppearance(value: unknown): HostAppearance;
-export declare function hostIdOfSession(sessionId: string, surface: 'sidebar' | 'header'): string | undefined;
+export declare function visibleSessionHostId(config: HostAppearance, sessionId: string, surface: 'sidebar' | 'header', blank?: boolean): string | undefined;
 export declare function resolveHostStyle(config: HostAppearance, hostId: string): Required<HostStyle>;
 export declare function hostDisplayName(hostId: string, status: RemoteStatusView | undefined, localName: string): string;
 export type HostAppearanceStore = ReturnType<typeof createHostAppearanceStore>;

@@ -44,7 +44,13 @@ export function parseHostAppearance(value: unknown): HostAppearance {
   return { enabled: config.enabled !== false, sidebar: config.sidebar !== false, header: config.header !== false, hosts }
 }
 
-export function hostIdOfSession(sessionId: string, surface: 'sidebar' | 'header'): string | undefined {
+export function visibleSessionHostId(
+  config: HostAppearance,
+  sessionId: string,
+  surface: 'sidebar' | 'header',
+  blank = false,
+): string | undefined {
+  if (blank || !config.enabled || !config[surface]) return undefined
   return fromVirtual(sessionId)?.serverId ?? (surface === 'sidebar' ? 'local' : undefined)
 }
 
