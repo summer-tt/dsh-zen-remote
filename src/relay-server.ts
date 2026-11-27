@@ -292,6 +292,8 @@ export interface RelayHandlerOptions {
   serverInfo: RelayServerInfo
   /** Whether the current Host composition can browse directories for Workspace adoption. */
   supportsWorkspaceAdd?: () => boolean
+  /** Current SessionController instance, when it supports the authoritative window. */
+  getHistoryWindowService?: () => object | undefined
   /** Create and submit on behalf of an authenticated paired device. */
   describeDraftModelControls?: (address: DraftControlsAddress) => Promise<DraftModelControls>
   createWithFirstMessage?: (device: string, request: unknown, authorize: () => void) => Promise<{ sessionId: string }>
@@ -517,20 +519,28 @@ export async function responseCompressedJson(
   res: ServerResponse,
   status: number,
   payload: unknown,
+  authorize?: () => string | undefined,
 ): Promise<void> {
+  const canWrite = (): boolean => {
+    if (res.writableEnded || res.destroyed || res.headersSent) return false
+    const code = authorize?.()
+    if (code === undefined) return true
+    responseJson(res, 403, { ok: false, error: { code } })
+    return false
+  }
   const raw = Buffer.from(JSON.stringify(payload), 'utf8')
   if (status !== 200 || !acceptsZrGzip(req) || raw.byteLength < ZR_GZIP_MIN_BYTES) {
-    responseJsonBytes(res, status, raw)
+    if (canWrite()) responseJsonBytes(res, status, raw)
     return
   }
   let compressed: Buffer
   try {
     compressed = await gzipAsync(raw, { level: 1 })
   } catch {
-    if (!res.writableEnded && !res.destroyed && !res.headersSent) responseJsonBytes(res, status, raw)
+    if (canWrite()) responseJsonBytes(res, status, raw)
     return
   }
-  if (res.writableEnded || res.destroyed || res.headersSent) return
+  if (!canWrite()) return
   if (compressed.byteLength >= raw.byteLength) {
     responseJsonBytes(res, status, raw)
     return
@@ -1375,6 +1385,11 @@ interface EventsSubscription {
    * {@link EVENT_REGISTRY_LIMIT}, oldest dropped. */
   events: Map<string, string>
   pendingShares: Map<string, ForwardableWaterfallFrame>
+  historyService?: object
+  historyLeg?: string
+  historySignal?: AbortSignal
+  historyActive?: () => boolean
+  closeHistoryLeg?: () => void
 }
 
 /**
@@ -1685,6 +1700,18 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
    * onward, when the gateway re-delivers still-pending events to the fresh
    * subscription.
    */
+  // The leg identifier is relay-internal, bound to the authenticated device
+  // and the live Core service instance. An old leg cannot authorize a new read.
+  const currentHistoryLeg = (device: string, leg: unknown): EventsSubscription | undefined => {
+    if (device === '' || typeof leg !== 'string') return undefined
+    for (const sub of liveEventSubscriptions) {
+      if (sub.device !== device || sub.historyLeg !== leg || sub.historyActive?.() !== true) continue
+      if (sub.historyService === options.getHistoryWindowService?.()) return sub
+      sub.closeHistoryLeg?.()
+    }
+    return undefined
+  }
+
   const filterEventsFrame = (sub: EventsSubscription, frame: unknown): unknown => {
     if (!isPlainObject(frame)) return null
     if (frame.type === 'ready') {
@@ -1792,6 +1819,8 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
         ...(options.createWithFirstMessage === undefined ? {} : { supportsCreateDraft: true, supportsCreateDraftImages: true }),
         ...(options.describeDraftModelControls === undefined ? {} : { supportsDraftModelControls: true }),
         ...(options.supportsWorkspaceAdd?.() === true ? { supportsWorkspaceAdd: true } : {}),
+        ...(deviceHeader !== '' && !deviceHeader.startsWith('peer:') && options.getHistoryWindowService?.() !== undefined
+          ? { supportsVerifiedHistoryWindow: true } : {}),
         // T42: the server's own interface fingerprints (empty when the wiring
         // had nothing to compute — the client judges group by group).
         fingerprints,
@@ -1948,6 +1977,19 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
       // answered before this line) and released in the route's finally,
       // which every path through the try reaches.
       const device = headerValue(req, 'x-zen-remote-device') ?? ''
+      let authorizeHistoryPage: (() => string | undefined) | undefined
+      if (namespace === 'session' && method === 'page' && body.historyEventLeg !== undefined) {
+        const leg = currentHistoryLeg(device, body.historyEventLeg)
+        if (leg === undefined) {
+          responseJson(res, 403, { ok: false, error: { code: 'history-route-changed' } })
+          return
+        }
+        authorizeHistoryPage = () => {
+          if (!decideInvoke(namespace, method, args, isAccessible).allow) return 'not-shared'
+          if (currentHistoryLeg(device, body.historyEventLeg) !== leg) return 'history-route-changed'
+          return undefined
+        }
+      }
       if ((invokesByDevice.get(device) ?? 0) >= MAX_INVOKES_PER_DEVICE) {
         responseJson(res, 429, { ok: false, error: { code: 'too-many-invokes' } })
         return
@@ -2236,7 +2278,7 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
         // preview: "expected Uint8Array"). The marker round-trip
         // (invoke-binary.ts) is restored on the client half (intercept.ts).
         const wire = isBinaryMethod ? markInvokeBinary(travels) : travels
-        await responseCompressedJson(req, res, 200, { ok: true, value: wire })
+        await responseCompressedJson(req, res, 200, { ok: true, value: wire }, authorizeHistoryPage)
       } catch (error) {
         // The gateway's own failures (unknown namespace, absent service) are
         // business answers, not transport errors: they ride a 200 envelope
@@ -2250,7 +2292,7 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
         } else if ((isDraftSubmission || isDraftFileCandidates || isDraftSkillCandidates || isDraftModelControls) && error instanceof NewConversationError) {
           if (!res.destroyed) responseJson(res, error.status, { ok: false, error: { code: error.code } })
         } else {
-          await responseCompressedJson(req, res, 200, errorEnvelopeOf(error))
+          await responseCompressedJson(req, res, 200, errorEnvelopeOf(error), authorizeHistoryPage)
         }
       } finally {
         res.off('close', onClientGone)
@@ -3250,8 +3292,9 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
         return
       }
       const decision = decideStream(namespace, method, args, isAccessible)
+      const verifiedFollow = namespace === 'session' && method === 'follow' && body.historyEventLeg !== undefined
       const streamKnownCursor =
-        namespace === 'session' && method === 'follow' && isValidKnownCursor(body.knownCursor)
+        !verifiedFollow && namespace === 'session' && method === 'follow' && isValidKnownCursor(body.knownCursor)
           ? body.knownCursor
           : undefined
       if (!decision.allow) {
@@ -3280,6 +3323,11 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
         }
       }
       const device = headerValue(req, 'x-zen-remote-device') ?? ''
+      const historyLeg = verifiedFollow ? currentHistoryLeg(device, body.historyEventLeg) : undefined
+      if (verifiedFollow && historyLeg === undefined) {
+        responseJson(res, 403, { ok: false, error: { code: 'history-route-changed' } })
+        return
+      }
       if ((streamsByDevice.get(device) ?? 0) >= MAX_STREAMS_PER_DEVICE) {
         responseJson(res, 429, { ok: false, error: { code: 'too-many-streams' } })
         return
@@ -3329,6 +3377,12 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
 
         const heartbeat = setInterval(() => {
           if (!finished && !clientGone) {
+            // A controller hot replacement does not restart the Core event
+            // carrier, so retire its history leg even with no pending reads.
+            if (eventsSub?.closeHistoryLeg !== undefined && eventsSub.historyService !== options.getHistoryWindowService?.()) {
+              eventsSub.closeHistoryLeg()
+              return
+            }
             // T59: a PER-STREAM ping carrying the names as of NOW. The
             // server's display name is re-read live per tick (a host rename
             // reaches every connected client within one heartbeat), and the
@@ -3528,7 +3582,29 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
           decision.events === true
             ? { device, token: randomBytes(8).toString('hex'), clientId: undefined, events: new Map(), pendingShares: new Map() }
             : undefined
-        if (eventsSub !== undefined) liveEventSubscriptions.add(eventsSub)
+        if (eventsSub !== undefined) {
+          if (body.historyEvents === true && device !== '' && !device.startsWith('peer:')) {
+            eventsSub.historyService = options.getHistoryWindowService?.()
+            eventsSub.historySignal = hangUp.signal
+            eventsSub.historyActive = () => !finished && !clientGone && !hangUp.signal.aborted && !res.destroyed
+            eventsSub.closeHistoryLeg = () => {
+              closeWith({ type: 'error', error: { code: 'history-route-changed' } })
+              hangUp.abort()
+            }
+          }
+          liveEventSubscriptions.add(eventsSub)
+        }
+
+        const historyRouteChanged = () => {
+          closeWith({ type: 'error', error: { code: 'history-route-changed' } })
+          hangUp.abort()
+        }
+        historyLeg?.historySignal?.addEventListener('abort', historyRouteChanged, { once: true })
+        const prepareVerifiedFrame = historyLeg === undefined ? undefined : (frame: unknown): unknown | null => {
+          if (currentHistoryLeg(device, body.historyEventLeg) === historyLeg) return frame
+          historyRouteChanged()
+          return null
+        }
 
         let unsubscribe = (): void => {}
         let applyToState: ((frame: unknown) => void) | undefined
@@ -3683,6 +3759,14 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
               return
             }
             if (event.type !== 'unshared') return
+            if (eventsSub.historyLeg !== undefined) {
+              // An address exposes only its immediate parent. Rotate the leg
+              // on every unshare to cover deeper inherited authorization.
+              eventsSub.historyLeg = randomBytes(16).toString('hex')
+              void writeLine({ type: 'frame', frame: {
+                type: 'history-unshared', sessionId: event.sessionId, leg: eventsSub.historyLeg,
+              } })
+            }
             for (const [eventId, agentId] of [...eventsSub.events]) {
               if (isAccessible(agentId)) continue
               eventsSub.events.delete(eventId)
@@ -3833,6 +3917,12 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
               applyToState?.(frame)
               const filtered = filterFrame(frame)
               if (filtered === null) continue
+              if (eventsSub?.historyService !== undefined && eventsSub.historyLeg === undefined &&
+                isPlainObject(filtered) && filtered.type === 'ready' && eventsSub.clientId !== undefined &&
+                options.getHistoryWindowService?.() === eventsSub.historyService) {
+                eventsSub.historyLeg = randomBytes(16).toString('hex')
+                await writeLine({ type: 'frame', frame: { type: 'history-ready', leg: eventsSub.historyLeg } })
+              }
               let outFrame = filtered
               if (isFirstFrame) {
                 isFirstFrame = false
@@ -3843,12 +3933,15 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
                   }
                 }
               }
-              await writeLine({ type: 'frame', frame: outFrame }, false, sessionStatusPrepare)
+              await writeLine({ type: 'frame', frame: outFrame }, false, prepareVerifiedFrame ?? sessionStatusPrepare)
             }
-            closeWith({ type: 'end' })
+            if (historyLeg !== undefined && currentHistoryLeg(device, body.historyEventLeg) !== historyLeg) historyRouteChanged()
+            else closeWith({ type: 'end' })
           }
         } catch (error) {
-          if (hangUp.signal.aborted || clientGone) {
+          if (historyLeg !== undefined && currentHistoryLeg(device, body.historyEventLeg) !== historyLeg) {
+            historyRouteChanged()
+          } else if (hangUp.signal.aborted || clientGone) {
             // The abort a hang-up (or an unshare kill) sends into the
             // iterator surfaces as gateway/cancelled — that is the stream's
             // DOCUMENTED normal end, swallowed whole.
@@ -3857,6 +3950,8 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
             closeWith({ type: 'error', error: errorEnvelopeOf(error).error })
           }
         } finally {
+          historyLeg?.historySignal?.removeEventListener('abort', historyRouteChanged)
+          if (eventsSub?.historyService !== undefined) hangUp.abort()
           companionAbort?.abort()
           openStreamKills.delete(killThisStream)
           clearInterval(heartbeat)

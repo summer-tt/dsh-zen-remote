@@ -80,6 +80,7 @@
  */
 
 import { AsyncLocalStorage } from 'node:async_hooks'
+import { randomUUID } from 'node:crypto'
 import { RelayError, defaultClock } from './relay-client.js'
 import type { RelayClient, RelayClock, RelayState } from './relay-client.js'
 import type { RelayPool } from './relay-pool.js'
@@ -854,6 +855,8 @@ export interface InstallInterceptOptions {
    * id's `serverId` to the matching pool entry, and the three global reads
    * plus the model catalog merge ALL paired servers in pairing order. */
   pool?: RelayPool
+  /** Exact Peer used by the authenticated standard Web transport. */
+  getHistoryBrowserPeer?: () => unknown
   /** Progress logging, wired to the context logger by index.ts. */
   log?: (format: string, ...args: unknown[]) => void
   /** Clock/timers for the merged streams' reopen backoff (CP4); defaults to
@@ -3807,9 +3810,30 @@ async function* mergedMultiSnapshotStream(deps: MultiSnapshotStreamDeps): AsyncG
   }
 }
 
+interface HistoryRoute {
+  readonly serverId: string
+  readonly epoch: string
+  readonly leg: string
+  readonly client: RelayClient
+  readonly peer: unknown
+  readonly pairing: object
+  readonly controller: AbortController
+}
+
+function historyRequest(endpoint: string, args: unknown): Record<string, unknown> | undefined {
+  if (endpoint !== 'session/follow' && endpoint !== 'session/page') return undefined
+  return isPlainObject(args) && isPlainObject(args.request) ? args.request : undefined
+}
+
+const HISTORY_ROUTE_CHANGED = 'history-route-changed'
+const HISTORY_ROUTE_CHANGED_MESSAGE = 'The authorized session history route changed'
+
 interface PoolEventSlot {
   serverId: string
   client: RelayClient
+  historyPairing?: object
+  historyEvents?: boolean
+  historyRoute?: HistoryRoute
   controller: AbortController | undefined
   offState: () => void
   /** This server's shown-and-uncanceled virtual eventIds — the orphan-close
@@ -3836,6 +3860,11 @@ interface MergedEventsStreamMultiDeps {
   summarySync: SessionSummarySync
   getRemoteDefault: (serverId: string) => unknown
   watchPool(fn: () => void): () => void
+  watchUninstall(fn: () => void): () => void
+  history?: {
+    peer: unknown
+    change(route: HistoryRoute, available: boolean): void
+  }
   onServerSessionsRemoved?: (fn: (serverId: string, virtualIds: readonly string[]) => void) => () => void
   rememberSession?: (virtualId: string) => void
   onSessionStatus?: (serverId: string, sessionId: string, running: boolean) => void
@@ -4086,6 +4115,45 @@ async function* mergedEventsStreamMulti(deps: MergedEventsStreamMultiDeps): Asyn
     runSummarySync()
   }
 
+  const historySignals = new WeakSet<object>()
+  const historyRouteFrame = (route: HistoryRoute, available: boolean): void => {
+    const frame = { type: 'emit', event: 'api-session/history-route', args: [{
+      serverId: route.serverId, routeEpoch: route.epoch, available,
+    }] }
+    if (available) historySignals.add(frame)
+    channel.push(frame)
+  }
+  const closeHistoryRoute = (slot: PoolEventSlot): void => {
+    const route = slot.historyRoute
+    if (route === undefined) return
+    delete slot.historyRoute
+    deps.history?.change(route, false)
+    route.controller.abort()
+    if (localOpened) historyRouteFrame(route, false)
+  }
+  const acceptHistoryEvent = (slot: PoolEventSlot, frame: unknown): boolean => {
+    if (!isPlainObject(frame) || (frame.type !== 'history-ready' && frame.type !== 'history-unshared')) return false
+    if (deps.history === undefined || slot.historyPairing === undefined ||
+      slot.client.handshakeInfo?.supportsVerifiedHistoryWindow !== true ||
+      typeof frame.leg !== 'string' || !/^[a-f0-9]{32}$/u.test(frame.leg)) return true
+    const previous = slot.historyRoute
+    if (frame.type === 'history-unshared') {
+      if (previous === undefined || previous.leg === frame.leg || typeof frame.sessionId !== 'string' || frame.sessionId === '') return true
+      if (localOpened) channel.push({ type: 'emit', event: 'api-session/history-invalidated', args: [{
+        serverId: slot.serverId, routeEpoch: previous.epoch, sessionId: toVirtual(slot.serverId, frame.sessionId),
+      }] })
+    } else if (previous !== undefined) return true
+    closeHistoryRoute(slot)
+    const route = {
+      serverId: slot.serverId, epoch: randomUUID(), leg: frame.leg, client: slot.client,
+      peer: deps.history.peer, pairing: slot.historyPairing, controller: new AbortController(),
+    }
+    slot.historyRoute = route
+    deps.history.change(route, true)
+    if (localOpened) historyRouteFrame(route, true)
+    return true
+  }
+
   const pumpSlot = async (slot: PoolEventSlot): Promise<void> => {
     try {
       while (alive && !slot.removed) {
@@ -4096,7 +4164,11 @@ async function* mergedEventsStreamMulti(deps: MergedEventsStreamMultiDeps): Asyn
         const controller = new AbortController()
         slot.controller = controller
         try {
-          const stream = slot.client.openStream('$zr', 'events', {}, controller.signal)
+          slot.historyEvents = deps.history !== undefined && slot.historyPairing !== undefined &&
+            slot.client.handshakeInfo?.supportsVerifiedHistoryWindow === true
+          const stream = slot.historyEvents
+            ? slot.client.openStream('$zr', 'events', {}, controller.signal, { historyEvents: true })
+            : slot.client.openStream('$zr', 'events', {}, controller.signal)
           let served = false
           for await (const frame of stream) {
             if (!alive || slot.removed || controller.signal.aborted) break
@@ -4104,6 +4176,7 @@ async function* mergedEventsStreamMulti(deps: MergedEventsStreamMultiDeps): Asyn
               served = true
               slot.reopenDelayMs = REMOTE_REOPEN_FIRST_MS
             }
+            if (acceptHistoryEvent(slot, frame)) continue
             const rewritten = rewriteRemoteEventFrame(frame, slot.serverId)
             if (rewritten === null) continue
             if (
@@ -4159,6 +4232,7 @@ async function* mergedEventsStreamMulti(deps: MergedEventsStreamMultiDeps): Asyn
             recordFailure('$zr/events', error instanceof RelayError ? error.code : 'internal')
           }
         } finally {
+          closeHistoryRoute(slot)
           if (slot.controller === controller) slot.controller = undefined
         }
         // THIS leg is over — close only ITS prompts. A disconnect is not a
@@ -4185,6 +4259,7 @@ async function* mergedEventsStreamMulti(deps: MergedEventsStreamMultiDeps): Asyn
     slots.delete(serverId)
     slot.removed = true
     slot.offState()
+    closeHistoryRoute(slot)
     slot.controller?.abort()
     // Only THIS server's pending prompts get the synthesized cancels.
     for (const eventId of slot.shownEvents) channel.push({ type: 'cancel', eventId })
@@ -4243,7 +4318,15 @@ async function* mergedEventsStreamMulti(deps: MergedEventsStreamMultiDeps): Asyn
       if (serverId === undefined) continue
       seen.add(serverId)
       const existing = slots.get(serverId)
-      if (existing !== undefined) {
+      if (deps.history !== undefined && entry.historyPairingReplacing === true) {
+        if (existing !== undefined) retireSlot(serverId, existing)
+        continue
+      }
+      const historyPairing = deps.history !== undefined && entry.client.handshakeInfo?.supportsVerifiedHistoryWindow === true
+        ? entry.historyPairing : undefined
+      if (existing !== undefined && (existing.client !== entry.client || existing.historyPairing !== historyPairing)) {
+        retireSlot(serverId, existing)
+      } else if (existing !== undefined) {
         if (existing.displayName !== entry.displayName) {
           existing.displayName = entry.displayName
           noteSlotIdentity(existing)
@@ -4253,6 +4336,7 @@ async function* mergedEventsStreamMulti(deps: MergedEventsStreamMultiDeps): Asyn
       const slot: PoolEventSlot = {
         serverId,
         client: entry.client,
+        ...(historyPairing !== undefined ? { historyPairing } : {}),
         controller: undefined,
         offState: () => {},
         shownEvents: new Set(),
@@ -4269,6 +4353,12 @@ async function* mergedEventsStreamMulti(deps: MergedEventsStreamMultiDeps): Asyn
         try {
           const firstOnline = state === 'online' && slot.stateSeen !== 'online'
           slot.stateSeen = state
+          const historyEvents = slot.historyPairing !== undefined && state === 'online' &&
+            slot.client.handshakeInfo?.supportsVerifiedHistoryWindow === true
+          if (slot.controller !== undefined && historyEvents !== slot.historyEvents) {
+            closeHistoryRoute(slot)
+            slot.controller.abort()
+          }
           if (state === 'unpaired' || state === 'revoked') {
             slot.controller?.abort()
             noteSlotIdentity(slot)
@@ -4318,13 +4408,17 @@ async function* mergedEventsStreamMulti(deps: MergedEventsStreamMultiDeps): Asyn
 
   const onExternalAbort = (): void => {
     alive = false
-    for (const slot of [...slots.values()]) slot.controller?.abort()
+    for (const slot of [...slots.values()]) {
+      closeHistoryRoute(slot)
+      slot.controller?.abort()
+    }
     flushWaiters()
     channel.end()
   }
   if (signal !== undefined) signal.addEventListener('abort', onExternalAbort)
+  const offUninstall = deps.history === undefined ? () => {} : deps.watchUninstall(onExternalAbort)
 
-  scanSlots()
+  if (alive) scanSlots()
 
   const localIterator = local[Symbol.asyncIterator]()
   const pumpLocal = async (): Promise<void> => {
@@ -4351,6 +4445,7 @@ async function* mergedEventsStreamMulti(deps: MergedEventsStreamMultiDeps): Asyn
             runSummarySync(pendingBatch)
           }
           for (const slot of [...slots.values()]) {
+            if (slot.historyRoute !== undefined) historyRouteFrame(slot.historyRoute, true)
             if (slot.statusDeferred) {
               slot.statusDeferred = false
               runStatusSync(slot)
@@ -4360,13 +4455,8 @@ async function* mergedEventsStreamMulti(deps: MergedEventsStreamMultiDeps): Asyn
       }
     } catch (error) {
       if (alive) channel.fail(error)
-      return
     }
-    if (!alive) return
-    alive = false
-    for (const slot of [...slots.values()]) slot.controller?.abort()
-    flushWaiters()
-    channel.end()
+    if (alive) onExternalAbort()
   }
 
   void pumpLocal()
@@ -4374,6 +4464,10 @@ async function* mergedEventsStreamMulti(deps: MergedEventsStreamMultiDeps): Asyn
     while (true) {
       const result = await channel.next()
       if (result.done === true) break
+      if (isPlainObject(result.value) && historySignals.has(result.value)) {
+        const args = result.value.args as { serverId: string; routeEpoch: string }[]
+        if (slots.get(args[0].serverId)?.historyRoute?.epoch !== args[0].routeEpoch) continue
+      }
       yield result.value
     }
   } finally {
@@ -4381,11 +4475,13 @@ async function* mergedEventsStreamMulti(deps: MergedEventsStreamMultiDeps): Asyn
     if (retryTimer !== undefined) clock.clearTimeout(retryTimer)
     offSyncRequest()
     offPool()
+    offUninstall()
     offServerRemoved()
     if (signal !== undefined) signal.removeEventListener('abort', onExternalAbort)
     for (const slot of [...slots.values()]) {
       slot.removed = true
       slot.offState()
+      closeHistoryRoute(slot)
       slot.controller?.abort()
     }
     slots.clear()
@@ -4444,6 +4540,22 @@ export function installIntercept(options: InstallInterceptOptions): InterceptHan
   // the old behavior stays byte-identical without a narrowing dance.
   const singleRelay = relay as RelayClient
   const singleGetServerId = getServerId as () => string | undefined
+  const historyRoutes = new Map<string, HistoryRoute>()
+  const isHistoryBrowser = (peer: unknown): boolean => peer !== undefined && peer === options.getHistoryBrowserPeer?.()
+  const isCurrentHistoryRoute = (route: HistoryRoute): boolean => {
+    const target = pool?.getByServerId(route.serverId)
+    return installed && isHistoryBrowser(route.peer) && !route.controller.signal.aborted &&
+      historyRoutes.get(route.epoch) === route && target?.historyPairing === route.pairing &&
+      target.client === route.client && route.client.state === 'online' &&
+      route.client.handshakeInfo?.supportsVerifiedHistoryWindow === true
+  }
+  function requireHistoryRoute(serverId: string, client: RelayClient, peer: unknown, epoch: unknown): HistoryRoute {
+    const route = typeof epoch === 'string' ? historyRoutes.get(epoch) : undefined
+    if (route === undefined || route.peer !== peer || route.serverId !== serverId || route.client !== client || !isCurrentHistoryRoute(route)) {
+      throw new RelayError(HISTORY_ROUTE_CHANGED, HISTORY_ROUTE_CHANGED_MESSAGE)
+    }
+    return route
+  }
   // T63: the summary-sync hub shared by the merged streams — the workspace
   // route nudges, the events leg fetches-and-announces. One per install: it
   // outlives individual stream generations so a nudge from a workspace leg
@@ -5164,9 +5276,13 @@ export function installIntercept(options: InstallInterceptOptions): InterceptHan
     args: unknown,
     virtuals: VirtualParts[],
     signal: AbortSignal | undefined,
+    peer?: unknown,
   ): Promise<DispatchEnvelope> {
+    const verified = historyRequest(endpoint, args)?.verifiedHistoryWindow === true
     const verdict = validate(endpoint, virtuals)
-    if (!verdict.ok) return failEnvelope(endpoint, verdict.code, verdict.message)
+    if (!verdict.ok) return verified
+      ? failEnvelope(endpoint, HISTORY_ROUTE_CHANGED, HISTORY_ROUTE_CHANGED_MESSAGE)
+      : failEnvelope(endpoint, verdict.code, verdict.message)
     // A WRITE while the relay is not serving (T34, whitelist rule per
     // T34-fix): refused here, never sent — the call could only fail out
     // there, and the read paths answer for themselves (forwarded as today,
@@ -5180,6 +5296,7 @@ export function installIntercept(options: InstallInterceptOptions): InterceptHan
     const slash = endpoint.indexOf('/')
     const namespace = slash === -1 ? endpoint : endpoint.slice(0, slash)
     const method = slash === -1 ? '' : endpoint.slice(slash + 1)
+    let historyRoute: HistoryRoute | undefined
     try {
       let clone: unknown = structuredClone(args)
       const fields = allClientFields(endpoint)
@@ -5205,14 +5322,19 @@ export function installIntercept(options: InstallInterceptOptions): InterceptHan
       if (!references.ok) {
         return failEnvelope(endpoint, 'remote-unsupported', copy().referenceNotOnServer)
       }
-      const pageRequest = endpoint === 'session/page' && isPlainObject(clone) && isPlainObject(clone.request) ? clone.request : undefined
+      const pageRequest = historyRequest(endpoint, clone)
+      if (verified && pageRequest !== undefined) {
+        historyRoute = requireHistoryRoute(serverId, client, peer, pageRequest.historyRouteEpoch)
+        delete pageRequest.verifiedHistoryWindow
+        delete pageRequest.historyRouteEpoch
+      }
       const pageBeforeSeq = pageRequest?.beforeSeq
       const pageThroughSeq = pageRequest?.throughSeq
       const pageTurnWindow = isPlainObject(pageRequest?.turnWindow) ? pageRequest.turnWindow : undefined
       const pageAddress = pageRequest?.address
       const pageCacheable =
-        historyCache !== undefined &&
-        pageRequest !== undefined &&
+        !verified && historyCache !== undefined &&
+        endpoint === 'session/page' && pageRequest !== undefined &&
         pageAddress !== undefined &&
         typeof pageBeforeSeq === 'number' &&
         Number.isSafeInteger(pageBeforeSeq) &&
@@ -5248,9 +5370,14 @@ export function installIntercept(options: InstallInterceptOptions): InterceptHan
       const leaveFg = enterForeground(serverId)
       let value: unknown
       try {
-        value = await client.invoke(namespace, method, clone, signal)
+        value = historyRoute === undefined
+          ? await client.invoke(namespace, method, clone, signal)
+          : await client.invoke(namespace, method, clone, historyRouteSignal(historyRoute, signal), historyRoute.leg)
       } finally {
         leaveFg()
+      }
+      if (historyRoute !== undefined && !isCurrentHistoryRoute(historyRoute)) {
+        return failEnvelope(endpoint, HISTORY_ROUTE_CHANGED, HISTORY_ROUTE_CHANGED_MESSAGE)
       }
       // The session answered: any closed-session entry for it is stale
       // (re-shared and served again) — the banner may go.
@@ -5293,6 +5420,9 @@ export function installIntercept(options: InstallInterceptOptions): InterceptHan
       }
       return { ok: true, value: rewrittenValue }
     } catch (error) {
+      if (historyRoute !== undefined && !isCurrentHistoryRoute(historyRoute)) {
+        return failEnvelope(endpoint, HISTORY_ROUTE_CHANGED, HISTORY_ROUTE_CHANGED_MESSAGE)
+      }
       const code = error instanceof RelayError ? error.code : 'internal'
       if (error instanceof RelayError && (code === 'unshared' || code === 'not-shared')) {
         for (const parts of virtuals) historyCache?.deleteSessionFamily(parts.serverId, parts.id)
@@ -5578,6 +5708,58 @@ export function installIntercept(options: InstallInterceptOptions): InterceptHan
       action: 'reopen',
       client: currentClient,
       nextDelayMs: Math.min(reopenDelayMs * 2, REMOTE_REOPEN_MAX_MS),
+    }
+  }
+
+  function historyRouteSignal(route: HistoryRoute, signal: AbortSignal | undefined): AbortSignal {
+    const routeSignal = route.controller.signal
+    return signal === undefined ? routeSignal : AbortSignal.any([signal, routeSignal])
+  }
+
+  async function* forwardVerifiedFollow(
+    route: HistoryRoute,
+    args: unknown,
+    claimed: VirtualParts[],
+    signal: AbortSignal | undefined,
+  ): AsyncGenerator<unknown> {
+    const endpoint = 'session/follow'
+    const checkRoute = () => {
+      if (!isCurrentHistoryRoute(route)) throw new RelayError(HISTORY_ROUTE_CHANGED, HISTORY_ROUTE_CHANGED_MESSAGE)
+    }
+    const callerAborted = () => signal?.aborted === true
+    let leaveForeground: (() => void) | undefined
+    try {
+      checkRoute()
+      leaveForeground = enterForeground(route.serverId)
+      const stream = route.client.openStream('session', 'follow', args, historyRouteSignal(route, signal), { historyEventLeg: route.leg })
+      for await (const frame of stream) {
+        if (callerAborted()) return
+        checkRoute()
+        if (leaveForeground !== undefined) {
+          leaveForeground()
+          leaveForeground = undefined
+          clearClosed(claimed)
+        }
+        if (isPlainObject(frame) && frame.type === 'snapshot' && isPlainObject(frame.header)) {
+          recordRemoteSessionCwd(route.serverId, frame.header.id, frame.header.cwd)
+        }
+        yield rewriteFrame(endpoint, frame, route.serverId, remoteDefaultOf(route.serverId))
+      }
+      if (!callerAborted()) checkRoute()
+    } catch (error) {
+      if (callerAborted()) return
+      if (!isCurrentHistoryRoute(route)) throwRecorded(endpoint, HISTORY_ROUTE_CHANGED, HISTORY_ROUTE_CHANGED_MESSAGE)
+      const code = error instanceof RelayError ? error.code : 'internal'
+      if (error instanceof RelayError && (code === 'unshared' || code === 'not-shared')) {
+        for (const parts of claimed) {
+          registerClosed(toVirtual(parts.serverId, parts.id), closedReasonOf(error))
+          historyCache?.deleteSessionFamily(parts.serverId, parts.id)
+        }
+        throwRecorded(endpoint, code, copy().closed)
+      }
+      throwRecorded(endpoint, code, messageOf(error))
+    } finally {
+      leaveForeground?.()
     }
   }
 
@@ -6508,7 +6690,7 @@ export function installIntercept(options: InstallInterceptOptions): InterceptHan
       }
       return (chainTarget.dispatchRpc as (...callArgs: unknown[]) => unknown).call(raw, endpoint, payload, signal, peer)
     }
-    return forwardInvoke(endpoint, args, virtuals, signal)
+    return forwardInvoke(endpoint, args, virtuals, signal, peer)
   }
 
   const wrappedOpen = function wrappedOpenWireStream(
@@ -6559,6 +6741,17 @@ export function installIntercept(options: InstallInterceptOptions): InterceptHan
             summarySync,
             getRemoteDefault: remoteDefaultOf,
             watchPool,
+            watchUninstall,
+            ...(isHistoryBrowser(peer) ? { history: {
+              peer,
+              change(route, available) {
+                if (available && installed) historyRoutes.set(route.epoch, route)
+                else {
+                  historyRoutes.delete(route.epoch)
+                  historyCache?.deleteServer(route.serverId)
+                }
+              },
+            } } : {}),
             onServerSessionsRemoved: (fn) => {
               eventRemovalSinks.add(fn)
               return () => {
@@ -6727,12 +6920,14 @@ export function installIntercept(options: InstallInterceptOptions): InterceptHan
         uplinkWindow,
       )
     }
+    const verified = historyRequest(endpoint, args)?.verifiedHistoryWindow === true
     const verdict = validate(endpoint, virtuals)
     if (!verdict.ok) {
       // TA-2: a refusal must not leak the host's UplinkInbox — half-close it
       // before the coded throw, the same courtesy the forwarded path's own
       // failure paths extend below.
       releaseUplink(uplink)
+      if (verified) throwRecorded(endpoint, HISTORY_ROUTE_CHANGED, HISTORY_ROUTE_CHANGED_MESSAGE)
       throwRecorded(endpoint, verdict.code, verdict.message)
     }
     // A WRITE stream while the relay is not serving (CP4, the invoke route's
@@ -6772,13 +6967,16 @@ export function installIntercept(options: InstallInterceptOptions): InterceptHan
       const fields = allClientFields(endpoint)
       if (fields !== undefined) restoreRegisteredFields(fields, clone)
 
-      const rawFollowAddress =
-        endpoint === 'session/follow' && isPlainObject(clone) && isPlainObject(clone.request)
-          ? (clone.request.address as SessionAddressInput | undefined)
-          : undefined
+      const followRequest = historyRequest(endpoint, clone)
+      const rawFollowAddress = followRequest?.address as SessionAddressInput | undefined
       const followAddressValid = rawFollowAddress !== undefined && normalizeSessionAddress(rawFollowAddress) !== undefined
 
-      if (endpoint === 'session/follow' && historyCache !== undefined && followAddressValid) {
+      if (verified && followRequest !== undefined) {
+        const route = requireHistoryRoute(serverId, client, peer, followRequest.historyRouteEpoch)
+        delete followRequest.verifiedHistoryWindow
+        delete followRequest.historyRouteEpoch
+        held = forwardVerifiedFollow(route, clone, virtuals, signal)
+      } else if (endpoint === 'session/follow' && historyCache !== undefined && followAddressValid) {
         const handoff = historyCache.takeHandoff(serverId, rawFollowAddress)
         const cached = handoff === undefined ? historyCache.getSnapshot(serverId, rawFollowAddress, { promoteToVisited: true }) : undefined
         if (handoff !== undefined || cached !== undefined) {
@@ -6858,6 +7056,8 @@ export function installIntercept(options: InstallInterceptOptions): InterceptHan
     uninstall() {
       if (!installed) return
       installed = false
+      for (const route of historyRoutes.values()) route.controller.abort()
+      historyRoutes.clear()
       // P55-2: the attribution state dies with the wrap — the fetch-route
       // half reads the wiring's live `interceptHandle` slot, which the
       // uninstall clears, so this is hygiene; a stale map must never

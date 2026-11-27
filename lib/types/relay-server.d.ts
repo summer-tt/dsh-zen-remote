@@ -144,6 +144,8 @@ export interface RelayHandlerOptions {
     serverInfo: RelayServerInfo;
     /** Whether the current Host composition can browse directories for Workspace adoption. */
     supportsWorkspaceAdd?: () => boolean;
+    /** Current SessionController instance, when it supports the authoritative window. */
+    getHistoryWindowService?: () => object | undefined;
     /** Create and submit on behalf of an authenticated paired device. */
     describeDraftModelControls?: (address: DraftControlsAddress) => Promise<DraftModelControls>;
     createWithFirstMessage?: (device: string, request: unknown, authorize: () => void) => Promise<{
@@ -261,7 +263,7 @@ export declare function acceptsZrGzip(req: IncomingMessage): boolean;
  * negotiated `x-zr-accept-encoding: gzip` and the compressed bytes are strictly
  * smaller; otherwise delegates to plain {@link responseJsonBytes}.
  */
-export declare function responseCompressedJson(req: IncomingMessage, res: ServerResponse, status: number, payload: unknown): Promise<void>;
+export declare function responseCompressedJson(req: IncomingMessage, res: ServerResponse, status: number, payload: unknown, authorize?: () => string | undefined): Promise<void>;
 export type KnownCursorEvalResult = {
     mode: 'full';
     snapshot: Record<string, unknown>;

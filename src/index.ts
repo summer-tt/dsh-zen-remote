@@ -1515,6 +1515,11 @@ export function apply(ctx: Context, config: MobileNavConfig = {}): void {
           secret: relaySecret,
           store,
           gateway: createLocalOnlyGateway(gatewayService),
+          getHistoryWindowService() {
+            const proxy = relayCtx.reflect.get('sessionController') as Record<PropertyKey, unknown> | undefined
+            const controller = proxy?.[symbols.original] as { supportsHistoryWindowStart?: unknown } | undefined
+            return controller?.supportsHistoryWindowStart === true ? controller : undefined
+          },
           supportsWorkspaceAdd() {
             const picker = relayCtx.reflect.get('directoryPicker') as { capability(): { kind: string } } | undefined
             return picker?.capability().kind === 'browse'
@@ -1991,6 +1996,7 @@ export function apply(ctx: Context, config: MobileNavConfig = {}): void {
         // order. (The single-server `relay` + `getServerId` form is gone
         // from the wiring with the row client.)
         pool: relayPool,
+        getHistoryBrowserPeer: () => gatewayCtx.reflect.get('connection')?.browserPeer,
         getCurrentSession: () => reportedCurrentSession,
         lang: resolveActiveLang,
         // PB-25b: each merged stream reports its real-session inventory

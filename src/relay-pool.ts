@@ -90,6 +90,9 @@ export interface RelayPoolEntryView {
   confirmedPairingId?: string
   pairingDeviceId?: string
   identityPending?: true
+  /** In-memory identity for a persisted pairing, after its current credentials handshake. */
+  historyPairing?: object
+  historyPairingReplacing?: true
   /** The handshake's server name; the persisted name until one lands. */
   serverName: string | undefined
   /** {@link deriveDisplayServerNames} over the current entries. */
@@ -159,6 +162,8 @@ interface PoolEntry {
   record: PairedServerRecord
   client: RelayClient
   unsubscribe: () => void
+  historyPairing?: object
+  replacingPairing?: true
   virtual?: boolean
 }
 
@@ -243,6 +248,8 @@ export function createRelayPool(options: RelayPoolOptions): RelayPool {
     serverName: entry.virtual ? entry.record.serverName : effectiveServerName(entry),
     ...(!entry.virtual && entry.record.deviceId ? { pairingDeviceId: entry.record.deviceId } : {}),
     ...(entry.record.identityPending === true ? { identityPending: true as const } : {}),
+    ...(entry.historyPairing !== undefined ? { historyPairing: entry.historyPairing } : {}),
+    ...(entry.replacingPairing === true ? { historyPairingReplacing: true } : {}),
     ...(!entry.virtual && entry.record.deviceId && entry.record.serverId && entry.record.identityPending !== true
       ? { confirmedPairingId: entry.record.deviceId } : {}),
     displayName,
@@ -285,7 +292,7 @@ export function createRelayPool(options: RelayPoolOptions): RelayPool {
    * material; skip the whole bookkeeping for it. */
   const handleHandshake = (entry: PoolEntry): void => {
     const info = entry.client.handshakeInfo
-    if (info === undefined) return
+    if (info === undefined || entry.replacingPairing === true) return
     // Virtual entries (PG-8): the handshake still happens over the mux (the
     // peer's relayHandler answers it) and refreshes the DISPLAY name only —
     // the serverId half stays the mounted peer nodeId, and nothing is
@@ -299,6 +306,7 @@ export function createRelayPool(options: RelayPoolOptions): RelayPool {
     }
     if (!/^[0-9a-f]{8}$/u.test(info.serverId) ||
       entry.client.lastHandshakeDigest !== relayCredentialsDigest(entry.record.serverUrl, entry.record.token)) return
+    entry.historyPairing ??= {}
     delete entry.record.identityPending
     const result = recordServerHandshake(stateFile, entry.record.id, {
       serverId: info.serverId,
@@ -400,10 +408,32 @@ export function createRelayPool(options: RelayPoolOptions): RelayPool {
       if (!result.ok) return result
       const existing = pool.get(result.record.id)
       if (existing !== undefined) {
+        const replacing = existing.historyPairing !== undefined && existing.client.handshakeInfo?.supportsVerifiedHistoryWindow === true
+        delete existing.historyPairing
+        if (replacing) {
+          existing.replacingPairing = true
+          // Retire downstream event legs before the live getters can return
+          // the replacement credentials, even when the client is reused.
+          options.onStateChange?.({
+            entryId: existing.record.id,
+            serverId: effectiveServerId(existing),
+            state: existing.client.state,
+          })
+        }
         existing.record = result.record
+        delete existing.replacingPairing
         // The getters read the swapped record per request; this both cancels
         // a pending retry wait and dials the new credentials immediately.
         existing.client.credentialsChanged()
+        if (replacing && existing.client.state === 'online') {
+          // An identical credential pair may produce no client state event.
+          handleHandshake(existing)
+          options.onStateChange?.({
+            entryId: existing.record.id,
+            serverId: effectiveServerId(existing),
+            state: existing.client.state,
+          })
+        }
       } else {
         addEntry(result.record)
       }

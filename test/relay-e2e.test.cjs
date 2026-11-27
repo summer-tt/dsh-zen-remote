@@ -535,6 +535,235 @@ test('e2e T23b-2: the interceptor merges the global workspace stream — local g
   } finally { await env.stop() }
 })
 
+// ---- Verified session history through the paired relay -----------------------
+
+async function openHistoryBrowser(t, env) {
+  const { pool, wiring } = makePool(path.join(ROOT, `history-${env.gwPort}-${Math.random()}.json`))
+  const serverUrl = `http://127.0.0.1:${env.proxyPort}`
+  const pairing = await pool.pair({ serverUrl, token: env.deviceToken, deviceId: env.deviceId })
+  assert.equal(pairing.ok, true)
+  const client = pairing.entry.client
+  await client.connect()
+  const controller = new AbortController()
+  const peer = { principal: { kind: 'owner' } }
+  const gate = makeLocalGate(controller.signal)
+  const gateway = new LocalEventsGateway(gate)
+  const handle = installIntercept({ raw: gateway, pool, getHistoryBrowserPeer: () => peer, prewarm: false })
+  wiring.notePoolEvent = () => handle.notePoolEvent()
+  t.after(async () => {
+    controller.abort()
+    handle.uninstall()
+    pool.stop()
+    await env.stop()
+  })
+  const frames = []
+  const events = await gateway.wireStream.open('$events', { args: {} }, undefined, peer, controller.signal)
+  const reading = (async () => { for await (const frame of events) frames.push(frame) })()
+  t.after(() => reading)
+  gate.push({ type: 'ready', clientId: 'browser' })
+  const serverId = client.handshakeInfo.serverId
+  const nextRoute = async (...previous) => {
+    const find = () => frames.find(frame => frame.event === 'api-session/history-route' &&
+      frame.args[0].available && !previous.includes(frame.args[0].routeEpoch))?.args[0]
+    await waitFor(() => find() !== undefined)
+    const route = find()
+    assert.equal(route.serverId, serverId)
+    return route.routeEpoch
+  }
+  const address = { kind: 'session', sessionId: toVirtual(serverId, 'session-a') }
+  const marker = (epoch) => epoch === undefined ? {} : { verifiedHistoryWindow: true, historyRouteEpoch: epoch }
+  const follow = async (epoch, request = {}) => {
+    const stream = await gateway.wireStream.open('session/follow', { args: { request: {
+      address, ...marker(epoch), ...request,
+    } } }, undefined, peer, controller.signal)
+    return stream[Symbol.asyncIterator]()
+  }
+  const page = (epoch, request = {}) => gateway.rpcBridge('session/page', { args: { request: {
+    address, beforeSeq: 3, throughSeq: 8, ...marker(epoch), ...request,
+  } } }, controller.signal, peer)
+  return { address, client, follow, frames, gateway, handle, nextRoute, page, peer, pool, serverId, serverUrl }
+}
+
+test('verified history reads use the live session service and bypass populated legacy caches', async (t) => {
+  const service = {}
+  let pageVersion = 0
+  const env = await boot({
+    shared: ['session-a'], getHistoryWindowService: () => service,
+    invoke: (call) => call.method === 'page' ? { records: [], version: ++pageVersion } : { items: [] },
+  })
+  const browser = await openHistoryBrowser(t, env)
+  assert.equal(browser.client.handshakeInfo.supportsVerifiedHistoryWindow, true)
+  const epoch = await browser.nextRoute()
+  assert.equal(browser.frames[0].type, 'ready')
+
+  const snapshot = (cursor) => ({ type: 'snapshot', header: { id: 'session-a' }, cursor, hasMore: true, records: [] })
+  const legacy = await browser.follow()
+  const first = legacy.next()
+  await waitFor(() => env.streams.length === 1)
+  env.streams[0].push(snapshot(8))
+  env.streams[0].finish()
+  assert.equal((await first).value.cursor, 8)
+  assert.equal((await legacy.next()).done, true)
+  assert.equal(browser.handle.historyCacheStats().snapshotCount, 1)
+
+  const cold = await browser.follow(epoch, { activate: true, assistantStream: true })
+  const coldFirst = cold.next()
+  await waitFor(() => env.streams.length === 2)
+  assert.deepEqual(env.streams[1].call.args.request, { ...FOLLOW_ARGS.request, activate: true, assistantStream: true })
+  env.streams[1].push({ ...snapshot(1), assistantStream: { revision: 1 } })
+  env.streams[1].finish()
+  const opening = (await coldFirst).value
+  assert.equal(opening.cursor, 1, 'the populated legacy cache did not win')
+  assert.equal(opening.header.id, browser.address.sessionId)
+  assert.deepEqual(opening.assistantStream, { revision: 1 })
+  assert.equal((await cold.next()).done, true)
+
+  const extended = await browser.follow(epoch, { historyWindowStart: 0, assistantStream: true })
+  const expanded = extended.next()
+  await waitFor(() => env.streams.length === 3)
+  assert.deepEqual(env.streams[2].call.args.request, { ...FOLLOW_ARGS.request, historyWindowStart: 0, assistantStream: true })
+  env.streams[2].push(snapshot(2))
+  env.streams[2].finish()
+  assert.equal((await expanded).value.cursor, 2)
+  await extended.return()
+
+  assert.equal((await browser.page()).value.version, 1)
+  assert.equal((await browser.page()).value.version, 1, 'old request still hits the page cache')
+  assert.equal((await browser.page(epoch)).value.version, 2)
+  assert.equal((await browser.page(epoch)).value.version, 3)
+  const lastPage = env.invokeCalls.filter(call => call.method === 'page').at(-1)
+  assert.deepEqual(lastPage.args.request, { ...FOLLOW_ARGS.request, beforeSeq: 3, throughSeq: 8 })
+  const rejected = await browser.gateway.rpcBridge('session/page', { args: { request: {
+    address: browser.address, verifiedHistoryWindow: true, historyRouteEpoch: epoch,
+  } } }, undefined, { principal: { kind: 'owner' } })
+  assert.equal(rejected.error.code, 'history-route-changed')
+})
+
+test('verified history invalidates inactive descendant history and resumes other reads on the new route', async (t) => {
+  const service = {}
+  const parents = new Map([['child', 'parent'], ['parent', 'grandparent']])
+  const env = await boot({
+    shared: ['session-a', 'grandparent'], parentOf: id => parents.get(id),
+    getHistoryWindowService: () => service, invoke: () => ({ records: [] }),
+  })
+  const browser = await openHistoryBrowser(t, env)
+  const epoch = await browser.nextRoute()
+  const address = { kind: 'subagent', parentSessionId: toVirtual(browser.serverId, 'parent'), childSessionId: 'child', mode: 'continuable' }
+  assert.equal((await browser.page(epoch, { address })).ok, true)
+  assert.equal((await browser.page(undefined, { address })).ok, true)
+  assert.equal(browser.handle.historyCacheStats().pageCount, 1)
+  assert.equal(env.handler.viewerCount('child'), 0)
+  env.store.unshare('grandparent', 'manual')
+  const nextEpoch = await browser.nextRoute(epoch)
+  assert.deepEqual(browser.frames.filter(frame => frame.event === 'api-session/history-invalidated').map(frame => frame.args[0]), [
+    { serverId: browser.serverId, routeEpoch: epoch, sessionId: toVirtual(browser.serverId, 'grandparent') },
+  ])
+  assert.ok(browser.frames.some(frame => frame.event === 'api-session/history-route' &&
+    frame.args[0].routeEpoch === epoch && !frame.args[0].available))
+  assert.equal(browser.handle.historyCacheStats().pageCount, 0)
+  assert.equal((await browser.page(epoch)).error.code, 'history-route-changed')
+  assert.equal((await browser.page(nextEpoch, { address })).error.code, 'not-shared')
+  assert.equal((await browser.page(nextEpoch)).ok, true)
+})
+
+test('verified history rejects a delayed page after a standalone event leg loss and a same-server re-pair', async (t) => {
+  const service = {}
+  let releasePage
+  const env = await boot({
+    shared: ['session-a'], getHistoryWindowService: () => service,
+    invoke: (call) => call.method === 'page' ? new Promise(resolve => { releasePage = resolve }) : { items: [] },
+  })
+  const browser = await openHistoryBrowser(t, env)
+  const epoch = await browser.nextRoute()
+  const late = browser.page(epoch)
+  await waitFor(() => releasePage !== undefined)
+  env.eventsGates.at(-1).finish()
+  const result = await late
+  assert.equal(result.error.code, 'history-route-changed')
+  releasePage({ records: [{ value: 'old event leg' }] })
+  const nextEpoch = await browser.nextRoute(epoch)
+  assert.equal(browser.client.state, 'online')
+
+  releasePage = undefined
+  const afterPair = browser.page(nextEpoch)
+  await waitFor(() => releasePage !== undefined)
+  const paired = await pairDesktop(env.gwPort, 'history replacement')
+  const replaced = await browser.pool.pair({ serverUrl: browser.serverUrl, token: paired.token, deviceId: paired.id })
+  assert.equal(replaced.ok, true)
+  assert.equal(replaced.replaced, true)
+  assert.equal(replaced.entry.client, browser.client)
+  assert.equal((await afterPair).error.code, 'history-route-changed')
+  releasePage({ records: [{ value: 'old credentials' }] })
+  const replacedEpoch = await browser.nextRoute(epoch, nextEpoch)
+  assert.equal((await browser.page(nextEpoch)).error.code, 'history-route-changed')
+  releasePage = undefined
+  const freshPage = browser.page(replacedEpoch)
+  await waitFor(() => releasePage !== undefined)
+  releasePage({ records: [] })
+  assert.equal((await freshPage).ok, true)
+})
+
+test('verified history replaces an idle event leg when the capable Core service changes', async (t) => {
+  let service = {}
+  const env = await boot({
+    shared: ['session-a'], heartbeatMs: 25, getHistoryWindowService: () => service,
+    invoke: () => ({ records: [] }),
+  })
+  const browser = await openHistoryBrowser(t, env)
+  const epoch = await browser.nextRoute()
+  service = {}
+  const nextEpoch = await browser.nextRoute(epoch)
+  const previousLeg = env.eventsGates.at(-1)
+  assert.ok(browser.frames.some(frame => frame.event === 'api-session/history-route' &&
+    frame.args[0].routeEpoch === epoch && !frame.args[0].available))
+  assert.equal((await browser.page(epoch)).error.code, 'history-route-changed')
+  assert.equal((await browser.page(nextEpoch)).ok, true)
+
+  // The new leg can open during a temporary service gap, with handshake info
+  // still reporting support. Recovery must also notice undefined → service.
+  service = undefined
+  await waitFor(() => env.eventsGates.at(-1) !== previousLeg)
+  service = {}
+  const recovered = await browser.nextRoute(epoch, nextEpoch)
+  assert.equal((await browser.page(recovered)).ok, true)
+})
+
+test('verified history rechecks delayed page errors at the target after a share was withdrawn and restored', async (t) => {
+  let rejectPage
+  const service = {}
+  const env = await boot({
+    shared: ['session-a'], getHistoryWindowService: () => service,
+    invoke: () => new Promise((_resolve, reject) => { rejectPage = reject }),
+  })
+  const controller = new AbortController()
+  t.after(async () => {
+    controller.abort()
+    await env.stop()
+  })
+  const events = env.client.openStream('$zr', 'events', {}, controller.signal, { historyEvents: true })[Symbol.asyncIterator]()
+  const [ready] = await collectFrames(events, 1)
+  assert.equal(ready.type, 'history-ready')
+  const late = env.client.invoke('session', 'page', FOLLOW_ARGS, undefined, ready.leg)
+  const refused = assert.rejects(late, error => error.code === 'history-route-changed')
+  await waitFor(() => rejectPage !== undefined)
+  env.store.unshare('session-a', 'manual')
+  env.store.share('session-a')
+  rejectPage(Object.assign(new Error('superseded Host result'), { code: 'gateway/bad-request' }))
+  await refused
+  controller.abort()
+  await events.return()
+})
+
+test('a Zen relay without the Core history capability keeps unmarked reads and declines marked reads', async (t) => {
+  const env = await boot({ shared: ['session-a'], invoke: () => ({ records: [] }) })
+  const browser = await openHistoryBrowser(t, env)
+  await waitFor(() => env.eventsGates.length > 0)
+  assert.equal(browser.client.handshakeInfo.supportsVerifiedHistoryWindow, undefined)
+  assert.equal((await browser.page()).ok, true)
+  assert.equal((await browser.page('old-epoch')).error.code, 'history-route-changed')
+  assert.equal(browser.frames.some(frame => frame.event === 'api-session/history-route'), false)
+})
+
 // ---- T32: the forwarded approval/question events, end to end --------------------
 
 /**

@@ -247,7 +247,7 @@ function startReverseProxy(getGwPort) {
 }
 
 function buildRelayParts(home, opts = {}) {
-  const { shared = [], workspaces, heartbeatMs, invoke, fingerprints, plugins, pluginBridge, apiFetch, parentOf } = opts
+  const { shared = [], workspaces, heartbeatMs, invoke, fingerprints, plugins, pluginBridge, apiFetch, parentOf, getHistoryWindowService } = opts
   const store = createShareStore({ file: path.join(home, 'shares.json'), idleHours: 48 })
   for (const id of shared) store.share(id)
   const invokeCalls = []
@@ -292,6 +292,7 @@ function buildRelayParts(home, opts = {}) {
     store,
     gateway,
     ...(parentOf !== undefined ? { parentOf } : {}),
+    ...(getHistoryWindowService !== undefined ? { getHistoryWindowService } : {}),
     ...(apiFetch !== undefined
       ? {
           getApiFetch: () => async (request) => {

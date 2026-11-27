@@ -56,6 +56,9 @@ export interface RelayPoolEntryView {
     confirmedPairingId?: string;
     pairingDeviceId?: string;
     identityPending?: true;
+    /** In-memory identity for a persisted pairing, after its current credentials handshake. */
+    historyPairing?: object;
+    historyPairingReplacing?: true;
     /** The handshake's server name; the persisted name until one lands. */
     serverName: string | undefined;
     /** {@link deriveDisplayServerNames} over the current entries. */

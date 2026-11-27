@@ -362,6 +362,8 @@ export interface InstallInterceptOptions {
      * id's `serverId` to the matching pool entry, and the three global reads
      * plus the model catalog merge ALL paired servers in pairing order. */
     pool?: RelayPool;
+    /** Exact Peer used by the authenticated standard Web transport. */
+    getHistoryBrowserPeer?: () => unknown;
     /** Progress logging, wired to the context logger by index.ts. */
     log?: (format: string, ...args: unknown[]) => void;
     /** Clock/timers for the merged streams' reopen backoff (CP4); defaults to

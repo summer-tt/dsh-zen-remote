@@ -103,6 +103,7 @@ export interface RelayHandshake {
     supportsCreateDraftImages?: true;
     supportsDraftModelControls?: true;
     supportsWorkspaceAdd?: true;
+    supportsVerifiedHistoryWindow?: true;
     /**
      * The SERVER's record of THIS device's name (T59) — what the pairing
      * registered and renames have since made of it. `undefined` from an older
@@ -252,7 +253,7 @@ export interface RelayClient {
     stop(): void;
     /** One invoke round-trip; resolves with the unwrapped `value`, throws
      * RelayError otherwise. A caller abort surfaces as `RelayError('aborted')`. */
-    invoke(namespace: string, method: string, args: unknown, signal?: AbortSignal): Promise<unknown>;
+    invoke(namespace: string, method: string, args: unknown, signal?: AbortSignal, historyEventLeg?: string): Promise<unknown>;
     /** Close one session's remote access on the SERVER (T34): the original
      * (non-virtual) session id rides `POST relay/v1/unshare`, the server
      * unshares it with reason `'client'`. Resolves on the success envelope;
@@ -406,6 +407,10 @@ export interface RelayStreamOptions {
     };
     /** Optional cached cursor for `session/follow` `snapshot-sync` negotiation. */
     knownCursor?: number;
+    /** Server-issued identifier for the authenticated history event stream. */
+    historyEventLeg?: string;
+    /** Opt in to relay-internal readiness and share revocations on `$zr/events`. */
+    historyEvents?: true;
     /** Optional per-stream override for the pre-first-frame timeout (used in tests). */
     firstFrameTimeoutMs?: number;
 }

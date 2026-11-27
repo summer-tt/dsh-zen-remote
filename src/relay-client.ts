@@ -234,6 +234,7 @@ export interface RelayHandshake {
   supportsCreateDraftImages?: true
   supportsDraftModelControls?: true
   supportsWorkspaceAdd?: true
+  supportsVerifiedHistoryWindow?: true
   /**
    * The SERVER's record of THIS device's name (T59) — what the pairing
    * registered and renames have since made of it. `undefined` from an older
@@ -408,7 +409,7 @@ export interface RelayClient {
   stop(): void
   /** One invoke round-trip; resolves with the unwrapped `value`, throws
    * RelayError otherwise. A caller abort surfaces as `RelayError('aborted')`. */
-  invoke(namespace: string, method: string, args: unknown, signal?: AbortSignal): Promise<unknown>
+  invoke(namespace: string, method: string, args: unknown, signal?: AbortSignal, historyEventLeg?: string): Promise<unknown>
   /** Close one session's remote access on the SERVER (T34): the original
    * (non-virtual) session id rides `POST relay/v1/unshare`, the server
    * unshares it with reason `'client'`. Resolves on the success envelope;
@@ -558,6 +559,10 @@ export interface RelayStreamOptions {
   uplinkWindow?: { maxBytes: number; frameOverheadBytes: number }
   /** Optional cached cursor for `session/follow` `snapshot-sync` negotiation. */
   knownCursor?: number
+  /** Server-issued identifier for the authenticated history event stream. */
+  historyEventLeg?: string
+  /** Opt in to relay-internal readiness and share revocations on `$zr/events`. */
+  historyEvents?: true
   /** Optional per-stream override for the pre-first-frame timeout (used in tests). */
   firstFrameTimeoutMs?: number
 }
@@ -1271,9 +1276,12 @@ export function createRelayClient(options: CreateRelayClientOptions): RelayClien
     let changed = previous.serverName !== serverName
     if (deviceName !== undefined && deviceName !== previous.deviceName) changed = true
     if (plugins !== previous.plugins) changed = true
+    const supportsVerifiedHistoryWindow = payload.supportsVerifiedHistoryWindow === true ? true : undefined
+    if (supportsVerifiedHistoryWindow !== previous.supportsVerifiedHistoryWindow) changed = true
     if (!changed) return
     handshakeInfo = {
       ...previous,
+      supportsVerifiedHistoryWindow,
       serverName,
       ...(deviceName !== undefined ? { deviceName } : {}),
       ...(plugins !== previous.plugins ? { plugins } : {}),
@@ -1650,6 +1658,7 @@ export function createRelayClient(options: CreateRelayClientOptions): RelayClien
         ...(payload.supportsCreateDraftImages === true ? { supportsCreateDraftImages: true } : {}),
         ...(payload.supportsDraftModelControls === true ? { supportsDraftModelControls: true } : {}),
         ...(payload.supportsWorkspaceAdd === true ? { supportsWorkspaceAdd: true } : {}),
+        ...(payload.supportsVerifiedHistoryWindow === true ? { supportsVerifiedHistoryWindow: true } : {}),
         // T59: the gateway's record of THIS device's name, when the server
         // speaks the field at all (an older server omits it and the client
         // keeps whatever it had).
@@ -1824,12 +1833,12 @@ export function createRelayClient(options: CreateRelayClientOptions): RelayClien
     }
   }
 
-  async function invoke(namespace: string, method: string, args: unknown, signal?: AbortSignal): Promise<unknown> {
+  async function invoke(namespace: string, method: string, args: unknown, signal?: AbortSignal, historyEventLeg?: string): Promise<unknown> {
     const creds = requireCredentials()
     // One serialization, two uses: the body on the wire and the size the
     // round-trip budget scales with. The timeout deliberately does NOT move
     // the connection state — a slow prompt is a slow call, not a dead link.
-    const bodyJson = JSON.stringify({ namespace, method, args })
+    const bodyJson = JSON.stringify({ namespace, method, args, ...(historyEventLeg !== undefined ? { historyEventLeg } : {}) })
     const isBinaryMethod = INVOKE_BINARY_RESULT_METHODS.has(`${namespace}/${method}`)
     if (!isBinaryMethod) {
       const payload = await exchange(INVOKE_PATH, bodyJson, signal, true, creds, {
@@ -2566,6 +2575,8 @@ export function createRelayClient(options: CreateRelayClientOptions): RelayClien
               ...(uplink !== undefined ? { uplink: true } : {}),
               ...(uplink !== undefined && options?.uplinkWindow !== undefined ? { uplinkWindow: options.uplinkWindow } : {}),
               ...(knownCursor !== undefined ? { knownCursor } : {}),
+              ...(options?.historyEventLeg !== undefined ? { historyEventLeg: options.historyEventLeg } : {}),
+              ...(options?.historyEvents === true ? { historyEvents: true } : {}),
             }),
             true,
           ),
