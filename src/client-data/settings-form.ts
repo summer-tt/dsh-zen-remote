@@ -26,6 +26,7 @@
  */
 
 import { RESTART_FIELDS } from '../restart-fields.ts'
+import { HOST_APPEARANCE_FIELD } from './session-host-appearance.ts'
 import { derivePluginBridgeStatuses, type PluginBridgeStatusView } from './plugin-bridge.ts'
 
 // --- wire shapes -----------------------------------------------------------
@@ -1723,6 +1724,11 @@ export class ZenRemoteSettingsForm {
    */
   async clearDeviceToken(): Promise<boolean> {
     return this.directWrite([{ op: 'unset', path: [DEVICE_TOKEN_FIELD] }])
+  }
+
+  /** Persist a host appearance change alongside the row's other instant edits. */
+  async writeHostAppearance(op: SettingsFormOp): Promise<boolean> {
+    return this.directWrite([{ ...op, path: [HOST_APPEARANCE_FIELD, ...op.path] }])
   }
 
   /**

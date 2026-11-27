@@ -62,6 +62,7 @@ export interface RemoteServerStatusView {
   state: RemoteStatusState
   versionMismatch: boolean
   serverName: string
+  displayName?: string
   /** The plugins whose bridge verdict is bridged RIGHT NOW on THIS server. */
   bridgedPlugins: readonly string[]
 }
@@ -101,6 +102,7 @@ function parseServerStatusEntry(value: unknown): RemoteServerStatusView {
     state: record.state === 'online' || record.state === 'revoked' || record.state === 'unpaired' ? record.state : 'offline',
     versionMismatch: record.versionMismatch === true,
     serverName: typeof record.serverName === 'string' ? record.serverName : '',
+    ...(typeof record.displayName === 'string' ? { displayName: record.displayName } : {}),
     bridgedPlugins: Array.isArray(record.bridgedPlugins)
       ? record.bridgedPlugins.filter((name): name is string => typeof name === 'string' && name !== '')
       : [],
@@ -231,12 +233,10 @@ export interface RemoteStatusDescription {
   hoverText: string
 }
 
+/** The virtual id selects its server; an unknown id uses the top-level status. */
 export function describeRemoteStatus(
   view: RemoteStatusView | undefined | null,
   t: RemoteStatusFormatter = createZhRemoteStatusFormatter(),
-  /** MS-6: the session on screen — its virtual id picks its OWN server's
-   * entry; omitted (or unanswered by the dict) keeps the pre-MS-6 top-level
-   * read. */
   sessionId?: string,
 ): RemoteStatusDescription {
   const status = resolveServerStatusView(view, sessionId)
@@ -403,19 +403,14 @@ const NETWORK_HINT_CLIENT_GAP_MS = 3_000
  * never overwrites a newer table), every GET failure fails its own round,
  * the timer is real while visible and gone while hidden, and becoming
  * visible pulls once immediately. `pollMs` exists for tests: the shipped
- * cadence is far too slow to observe. `hintGapMs` exists for the same
- * reason: the shipped hint gap (default 3000) is far too slow to observe.
+ * cadence is far too slow to observe. Without `networkHint` the store sends
+ * no network-restored hints. `hintGapMs` sets their minimum spacing (3s by default).
  */
 export function createRemoteStatusStore(
   fetchImpl: typeof fetch,
   visibility: VisibilitySource = documentVisibility,
   pollMs: number = REMOTE_STATUS_POLL_MS,
-  /** the network-restored hint source. Omitted → no
-   * hint wiring (a host mount, or a test). */
   networkHint?: NetworkHintSource,
-  /** the minimum gap between two client-side hints, ms; default 3000 (the
-   * same anti-storm gap the host enforces). Exists for tests, like
-   * `pollMs`: the shipped gap is far too slow to observe. */
   hintGapMs: number = NETWORK_HINT_CLIENT_GAP_MS,
 ): RemoteStatusStore {
   const gate = createLatestGate()

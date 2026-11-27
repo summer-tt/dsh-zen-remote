@@ -27,6 +27,12 @@ v1.0.0（fork 自 [mexiaosqwq/dsh-web-mobile](https://github.com/mexiaosqwq/dsh-
 
 - **插件桥（2.1）**：远程共享组之后多一个小节「插件桥」——主服务端区块里逐插件列出已登记的名字与版本：只含会话数据的标注「随会话共享转发」；含整机数据的给开关「允许转发整机数据」（缺省关），旁注「打开后，已配对的桌面应用端可在远程会话里读取该插件的整机数据」。开关走与其它字段同一条 staged 表单通道（提交整张 `pluginBridgeConsent` 表，只动该插件的键），保存后列表自动重拉（数据来自 `GET /_dsh/zen-remote/admin/plugin-bridge`，经网关打开时拒绝）。子客户端区块的诊断组里逐插件一行「名字 · 本机版本 · 状态」，状态文案：已桥接 / 服务端未安装 / 版本不同（服务端 x.y.z）/ 声明不一致 / 服务端主人未允许整机数据 / 中继离线 / 服务端 zen-remote 版本过旧；本机改道未启用时另加一行「本机改道未启用：<原因>」。文案与判定逻辑都是纯函数（`src/client-data/plugin-bridge.ts`）。
 
+### 会话主机图标
+
+在 DSH 的“插件 → Zen Remote → 会话主机图标”中，可以分别控制侧边栏和顶栏的图标，为每台主机选择颜色与图标，查看预览并恢复默认。改动保存到当前 DSH profile，保存成功后立即更新两处图标。本机默认使用灰色显示器。远程主机默认使用服务器图标，颜色由 `serverId` 决定，连接状态、改名和重名都不会影响配色。
+
+DSH 原生侧边栏在会话时间之后和置顶标记之前显示 14 px 图标，保留左侧的会话状态点。空白会话省略图标。悬停时，侧边栏沿用原生行为切换右侧内容，悬浮卡会显示主机名。会话顶栏只在远程会话显示 16 px 图标，位于标题或 Better Session Topbar 的面包屑之后，与地球连接状态图标独立。Zen Remote 的手机顶栏将主机图标放在返回按钮旁。
+
 ### 主服务端：共享部件
 
 - **标题行远程图标**（`conversation.session.header.actions`，order 25，排在官方任务入口之后）：灰色为未开启，亮色为已开启，亮色带小圆点表示此刻有桌面应用端正在查看；悬停显示剩余闲置时间；点击开关当前会话的远程，带二次确认。
@@ -50,13 +56,14 @@ v1.0.0（fork 自 [mexiaosqwq/dsh-web-mobile](https://github.com/mexiaosqwq/dsh-
 
 | 部件 | 槽位 | 出现在哪些角色 |
 | --- | --- | --- |
-| 插件设置区块 | `plugins.row.config` | 两角色（内容按角色不同） |
+| 插件设置区块 | `plugins.row.config` | 三种角色（内容按角色不同） |
+| 会话主机图标 | `sidebar.session.row.trailing` / `conversation.session.header.actions` | 侧边栏覆盖本机和远程会话，顶栏只覆盖远程会话 |
 | 标题行远程图标 + 会话「…」菜单项 | `conversation.session.header.actions` / `sidebar.workspaces.session.menu.item` | host |
 | 标题行连接图标 + composer 横幅 | 同上槽位 / `conversation.input.dock` | client（仅远程会话渲染） |
 | 产物下载按钮 | `deliverables.file.actions` / `sidebar.right.tab.document.actions` | client（仅远程会话渲染） |
 | 远程分组（流合并进侧边栏） | `workspace/follow` 全局流的运行时包装 | client |
 
-门外留下的只有这些；手机外壳本体（两级页面栈、composer 重排、手势、调试徽章）仍受门与 `<768px` 断点的双重约束，桌面 ≥1024px 逐像素 no-op 的硬约束不变。
+手机外壳本体（两级页面栈、composer 重排、手势、调试徽章）仍受桌面端门与 `<768px` 断点的双重约束。
 
 ## 效果
 

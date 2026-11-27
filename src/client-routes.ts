@@ -1560,6 +1560,7 @@ export function createClientHandler(options: ClientHandlerOptions): ClientHandle
               state: remoteStatusStateOf(entry.client),
               versionMismatch: (entry.client.compat?.different?.length ?? 0) > 0,
               serverName: entry.serverName ?? '',
+              displayName: entry.serverName?.trim() ? entry.displayName : entry.serverId,
               bridgedPlugins: bridgedOf(entry.serverId, entry.client),
             }
           }

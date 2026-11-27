@@ -30,6 +30,8 @@ import { NS } from './locales.ts'
 import type { MobileNavKey } from './locales.ts'
 import { SettingsSection } from './settings/SettingsSection.tsx'
 import { registerSettingsPage } from './settings/register-settings.ts'
+import { createHostAppearanceStore } from '../client-data/session-host-appearance.ts'
+import { registerSessionHostIcons } from './session-host-register.ts'
 import { GatewayWizard } from './wizard/GatewayWizard.tsx'
 import { registerGatewayWizard } from './wizard/register-wizard.ts'
 import { RemoteHeaderIcon } from './RemoteHeaderIcon.tsx'
@@ -37,6 +39,7 @@ import { RemoteShareMenuItem } from './RemoteShareMenu.tsx'
 import { getSharesStore } from '../client-data/shares.ts'
 import { registerRemoteShareUi } from './remote-share-register.ts'
 import { RemoteStatusIcon } from './RemoteStatusIcon.tsx'
+import { SidebarSessionHostIcon, HeaderSessionHostIcon, SidebarSessionHostHover } from './SessionHostIcon.tsx'
 import { RemoteComposerBanner } from './RemoteComposerBanner.tsx'
 import { registerRemoteStatusUi } from './remote-status-register.ts'
 import { mountCurrentSessionReporter } from './current-session-report.ts'
@@ -123,7 +126,9 @@ export function apply(ctx: ClientContext): void {
   // 但设置页必须生效（主服务端就是桌面端）。字典、设置页样式与设置表单服务
   // 的按需注入都在 registerSettingsPage 里（那个服务名绝不进顶层的 inject
   // 数组，否则没有该服务的环境整个界面半边都加载不了）。
-  registerSettingsPage(ctx, SettingsSection)
+  const hostAppearance = createHostAppearanceStore()
+  registerSettingsPage(ctx, SettingsSection, hostAppearance)
+  registerSessionHostIcons(ctx, hostAppearance, SidebarSessionHostIcon, HeaderSessionHostIcon, SidebarSessionHostHover)
 
   // GW-10 网关配置引导「让手机连上来」：同样在桌面门之前注册——桌面端 App
   // 正是主服务端，wizard 恰好是它最有用的入口。部件自身三重门控：subject

@@ -25,6 +25,7 @@ import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import { DEVICE_TOKEN_FIELD, ZenRemoteSettingsForm } from '../../client-data/settings-form.ts'
 import { getSharesStore } from '../../client-data/shares.ts'
+import type { HostAppearanceStore } from '../../client-data/session-host-appearance.ts'
 import { NS, en, zh } from '../locales.ts'
 import { SETTINGS_CSS } from './settings-css.ts'
 import type { SettingsSection } from './SettingsSection.tsx'
@@ -64,7 +65,7 @@ export const SETTINGS_ROW_KEY = 'dsh-zen-remote#dsh-zen-remote'
  * @param section - the block component; a parameter so this module stays
  *   JSX-free and importable under Node's type stripping.
  */
-export function registerSettingsPage(ctx: ClientContext, section: typeof SettingsSection): void {
+export function registerSettingsPage(ctx: ClientContext, section: typeof SettingsSection, appearance: HostAppearanceStore): void {
   // Dictionaries first: the registration below declares `locale: NS`, and the
   // phone shell (behind the desktop gate) reads the same namespace.
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-mobile-nav: dictionaries')
@@ -83,6 +84,7 @@ export function registerSettingsPage(ctx: ClientContext, section: typeof Setting
   // over, and the plugin row must still load.
   ctx.inject(['configForms'], (formsCtx) => {
     const scope = formsCtx.configForms.get(SETTINGS_ENTRY_ID)
+    formsCtx.effect(() => appearance.attach(scope), 'dsh-zen-remote: session host appearance')
     // The device token's configured flag rides the describe view's secrets
     // sidecar: the key literal never rides a response, so presence is all
     // the client learns (same seam as dsh-llm-verifier). A token can be
@@ -109,7 +111,7 @@ export function registerSettingsPage(ctx: ClientContext, section: typeof Setting
         locale: NS,
         // The T33b shared-session list rides the same shares store singleton
         // as the title-row icon and the session menu — one poll loop total.
-        inject: () => ({ config, shares: getSharesStore() }),
+        inject: () => ({ config, shares: getSharesStore(), appearance }),
       }, section)),
     ), 'dsh-zen-remote: row config page')
   })

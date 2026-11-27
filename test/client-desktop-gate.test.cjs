@@ -97,7 +97,8 @@ test('desktop shell: the settings page still registers (locale + row config bloc
   try {
     const { registerSettingsPage } = await import('../src/client/settings/register-settings.ts')
     const { ctx, calls } = fakeCtx()
-    registerSettingsPage(ctx, stubSection)
+    const { createHostAppearanceStore } = await import('../src/client-data/session-host-appearance.ts')
+    registerSettingsPage(ctx, stubSection, createHostAppearanceStore())
 
     runEffect(calls, 'dsh-mobile-nav: dictionaries')
     assert.equal(calls.localeRegisters.length, 1)
@@ -124,7 +125,8 @@ test('plain web: the settings page registers the same way', async () => {
   assert.ok(!('dshDesktop' in globalThis))
   const { registerSettingsPage } = await import('../src/client/settings/register-settings.ts')
   const { ctx, calls } = fakeCtx()
-  registerSettingsPage(ctx, stubSection)
+  const { createHostAppearanceStore } = await import('../src/client-data/session-host-appearance.ts')
+  registerSettingsPage(ctx, stubSection, createHostAppearanceStore())
   runEffect(calls, 'dsh-mobile-nav: dictionaries')
   assert.equal(calls.localeRegisters.length, 1)
   const formsCalls = driveConfigForms(ctx)
@@ -135,7 +137,8 @@ test('plain web: the settings page registers the same way', async () => {
 test('configForms is lazy: nothing outside the ctx.inject callback touches it', async () => {
   const { registerSettingsPage } = await import('../src/client/settings/register-settings.ts')
   const { ctx, calls } = fakeCtx()
-  registerSettingsPage(ctx, stubSection)
+  const { createHostAppearanceStore } = await import('../src/client-data/session-host-appearance.ts')
+  registerSettingsPage(ctx, stubSection, createHostAppearanceStore())
   assert.deepEqual(calls.slotsRegistered, [])
   assert.deepEqual(calls.injects.map((call) => call.services), [['configForms']])
 })
@@ -145,7 +148,8 @@ test('apply order guard: registerSettingsPage, registerRemoteShareUi, registerRe
   const gateAt = source.indexOf('if (isDesktopShell()) return')
   assert.ok(gateAt !== -1)
   for (const call of [
-    'registerSettingsPage(ctx, SettingsSection)',
+    'registerSettingsPage(ctx, SettingsSection, hostAppearance)',
+    'registerSessionHostIcons(ctx, hostAppearance, SidebarSessionHostIcon, HeaderSessionHostIcon, SidebarSessionHostHover)',
     'registerRemoteShareUi(ctx, RemoteHeaderIcon, RemoteShareMenuItem)',
     'registerRemoteStatusUi(ctx, RemoteStatusIcon, RemoteComposerBanner)',
     'installRemoteSessionGuard(ctx)',

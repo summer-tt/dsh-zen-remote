@@ -8,6 +8,37 @@
  */
 
 export const SETTINGS_CSS = `
+.zr-session-host-glyph {
+  display: inline-flex;
+  flex: none;
+  vertical-align: middle;
+  color: var(--zr-host-light);
+}
+[data-ds-dark-theme] .zr-session-host-glyph {
+  color: var(--zr-host-dark);
+}
+.zr-session-host-hover {
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+[data-zen-remote="settings"] .zr-settings-host-select {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+[data-zen-remote="settings"] .zr-settings-host-select select.zr-settings-input {
+  min-width: 0;
+  max-width: min(260px, 100%);
+}
+[data-zen-remote="settings"] .zr-settings-host .zr-settings-row {
+  flex-wrap: wrap;
+}
+[data-zen-remote="settings"] .zr-settings-host .zr-settings-reset:disabled {
+  cursor: default;
+  opacity: .5;
+}
 [data-zen-remote="settings"] {
   display: flex;
   flex-direction: column;

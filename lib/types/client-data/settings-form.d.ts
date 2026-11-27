@@ -981,6 +981,8 @@ export declare class ZenRemoteSettingsForm {
      * the next pairing only needs a fresh code.
      */
     clearDeviceToken(): Promise<boolean>;
+    /** Persist a host appearance change alongside the row's other instant edits. */
+    writeHostAppearance(op: SettingsFormOp): Promise<boolean>;
     /**
      * Drop ONE field's staged draft (T60): after the pairing write landed the
      * name in the row, the draft that produced it is stale — it now equals the

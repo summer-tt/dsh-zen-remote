@@ -38,6 +38,8 @@ import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots
 import { Button, SettingsForm, SettingsValueField, Switch } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { SettingsFormLabels } from '@deepseek-ai/dsh-client-ui-primitives'
 import { notifyClientConfigChanged } from '../client-config.ts'
+import { HostAppearanceSettings } from './HostAppearanceSettings.tsx'
+import type { HostAppearanceStore } from '../../client-data/session-host-appearance.ts'
 import {
   ADMIN_ACTION_ROUTE,
   ADMIN_PAIR_ROUTE,
@@ -104,6 +106,7 @@ export interface SettingsSectionProps extends PropsRuntime<'plugins.row.config'>
   /** The shared shares store (injected share, T33b) — the same singleton the
    * title-row icon and the session menu read. */
   shares: SharesStore
+  appearance: HostAppearanceStore
 }
 
 /** Device roles the pairing picker offers, in display order. */
@@ -380,7 +383,7 @@ function PeerDeviceRow(props: {
   )
 }
 
-function SettingsSectionPage({ config, shares, t }: SettingsSectionProps) {
+function SettingsSectionPage({ config, shares, appearance, t }: SettingsSectionProps) {
   const form = useSyncExternalStore(
     useCallback((cb: () => void) => config.subscribe(cb), [config]),
     () => config.getSnapshot(),
@@ -1374,6 +1377,8 @@ function SettingsSectionPage({ config, shares, t }: SettingsSectionProps) {
         <p className="zr-settings-hint" data-invalid="true">{t('settings.refreshFailed')}</p>
       )}
       {data?.viaGateway === true && <p className="zr-settings-notice">{t('settings.remoteNotice')}</p>}
+
+      <HostAppearanceSettings appearance={appearance} form={config} t={t} />
 
       {/* The staged row fields — the only part the settings-form frame owns. */}
       <div className="zr-settings-card">

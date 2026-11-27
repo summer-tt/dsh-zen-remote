@@ -379,6 +379,10 @@ export const HEADER_CSS = `/* ---------- session header five-piece reflow (< 768
   [data-phase] header [data-slot="conversation.session.header.actions"] > [data-mobile-nav="header-back"] {
     display: inline-flex !important;
   }
+  /* The remote host glyph fits beside the 44px Back control in the left column. */
+  [data-phase] header [data-slot="conversation.session.header.actions"] > [data-zr-session-host="header"] {
+    display: inline-flex !important;
+  }
   /* header-viewrow is position:absolute (see below), so its re-shown
      display value must match the flex layout its own rule declares. */
   [data-phase] header [data-slot="conversation.session.header.actions"] > [data-mobile-nav="header-viewrow"] {

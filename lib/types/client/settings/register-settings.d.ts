@@ -20,6 +20,7 @@
  * UiWorkspaceLike faces elsewhere in this plugin).
  */
 import type { ClientContext } from '../compat/types.ts';
+import type { HostAppearanceStore } from '../../client-data/session-host-appearance.ts';
 import type { SettingsSection } from './SettingsSection.tsx';
 declare module '@deepseek-ai/dsh-client-ui-slots' {
     interface SlotMap {
@@ -54,5 +55,5 @@ export declare const SETTINGS_ROW_KEY = "dsh-zen-remote#dsh-zen-remote";
  * @param section - the block component; a parameter so this module stays
  *   JSX-free and importable under Node's type stripping.
  */
-export declare function registerSettingsPage(ctx: ClientContext, section: typeof SettingsSection): void;
+export declare function registerSettingsPage(ctx: ClientContext, section: typeof SettingsSection, appearance: HostAppearanceStore): void;
 //# sourceMappingURL=register-settings.d.ts.map

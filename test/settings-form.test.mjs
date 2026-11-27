@@ -38,7 +38,10 @@ import {
   readAdminBridgeRow,
   togglePluginConsent,
 } from '../src/client-data/plugin-bridge.ts'
-import { BRIDGE_STAMP_PLUGIN } from '../src/client-data/remote-status.ts'
+import { BRIDGE_STAMP_PLUGIN, parseRemoteStatusBody } from '../src/client-data/remote-status.ts'
+import {
+  createHostAppearanceStore, hostDisplayName, hostIdOfSession, parseHostAppearance, resolveHostStyle,
+} from '../src/client-data/session-host-appearance.ts'
 
 const NOW = 1_700_000_000_000
 
@@ -1257,5 +1260,62 @@ test('T6 derivePeerStatusView: parses versionSync tolerantly and ignores absent/
       derivePeerStatusView({ configured: true, peers: [], versionSync: junk }).versionSync,
       undefined,
     )
+  }
+})
+
+
+test('host appearance keeps ownership and color through roster name and state changes', () => {
+  const sessionId = 'zr~aaaa1111~session-test'
+  const hostId = hostIdOfSession(sessionId, 'sidebar')
+  const defaults = parseHostAppearance(undefined)
+  assert.equal(hostId, 'aaaa1111')
+  assert.equal(hostIdOfSession(sessionId, 'header'), hostId)
+  assert.equal(hostIdOfSession('local-session', 'header'), undefined)
+  assert.equal(hostIdOfSession('local-session', 'sidebar'), 'local')
+  assert.deepEqual(resolveHostStyle(defaults, 'local'), { color: 'gray', icon: 'monitor' })
+  const before = resolveHostStyle(defaults, hostId)
+  assert.equal(before.icon, 'server')
+  assert.notEqual(before.color, 'gray')
+  const roster = parseRemoteStatusBody({ servers: {
+    aaaa1111: { state: 'offline', serverName: 'Studio', displayName: 'Studio-1' },
+    bbbb2222: { state: 'online', serverName: 'Studio', displayName: 'Studio-2' },
+  } }, NOW)
+  assert.equal(hostDisplayName(hostId, roster, 'Local'), 'Studio-1')
+  const renamed = parseRemoteStatusBody({ servers: { aaaa1111: { serverName: 'Lab' } } }, NOW + 1)
+  assert.equal(hostDisplayName(hostId, renamed, 'Local'), 'Lab')
+  assert.equal(hostDisplayName('cccc3333', roster, 'Local'), 'cccc3333')
+  assert.deepEqual(resolveHostStyle(defaults, hostId), before)
+})
+
+test('profile host appearance publishes committed changes and reset on the shared source', async () => {
+  const appearance = createHostAppearanceStore()
+  const { scope, state } = fakeScope()
+  const detach = appearance.attach(scope)
+  const form = new ZenRemoteSettingsForm(scope)
+  try {
+    const snapshots = []
+    const off = appearance.subscribe(() => snapshots.push(appearance.getSnapshot()))
+    const config = { enabled: false, sidebar: false, hosts: {
+      aaaa1111: { color: 'rose', icon: 'cloud' },
+      bbbb2222: { color: 'unknown', icon: 'terminal' },
+      constructor: { color: 'teal' },
+    } }
+    state.snapshot = { ...state.snapshot, value: { sessionHostAppearance: config } }
+    for (const listener of state.listeners) listener()
+    assert.deepEqual(snapshots[0], { enabled: false, sidebar: false, header: true, hosts: {
+      aaaa1111: { color: 'rose', icon: 'cloud' },
+      bbbb2222: { icon: 'terminal' },
+    } })
+    assert.equal(await form.writeHostAppearance({ op: 'unset', path: ['hosts', 'aaaa1111'] }), true)
+    assert.deepEqual(state.mutateCalls, [{
+      ops: [{ op: 'unset', path: ['sessionHostAppearance', 'hosts', 'aaaa1111'] }], expectedRevision: 7,
+    }])
+    state.snapshot = { ...state.snapshot, value: {} }
+    for (const listener of state.listeners) listener()
+    assert.deepEqual(snapshots[1], parseHostAppearance(undefined))
+    off()
+  } finally {
+    form.dispose()
+    detach()
   }
 })

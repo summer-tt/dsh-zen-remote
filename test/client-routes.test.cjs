@@ -2267,8 +2267,8 @@ test('MS-5 remote-status pool mode: per-serverId map with state/versionMismatch/
     assert.equal(res.status, 200)
     const body = JSON.parse(res.body)
     assert.deepEqual(body.servers, {
-      abcd1234: { state: 'online', versionMismatch: true, serverName: 'A', bridgedPlugins: ['aaa-first', 'zzz-later'] },
-      ffffffff: { state: 'revoked', versionMismatch: false, serverName: 'B', bridgedPlugins: [] },
+      abcd1234: { state: 'online', versionMismatch: true, serverName: 'A', displayName: 'A', bridgedPlugins: ['aaa-first', 'zzz-later'] },
+      ffffffff: { state: 'revoked', versionMismatch: false, serverName: 'B', displayName: 'B', bridgedPlugins: [] },
     }, 'an entry without a handshake serverId is not addressable and is skipped')
     // The top-level compatibility fields survive, mirroring the FIRST entry.
     assert.equal(body.state, 'online')

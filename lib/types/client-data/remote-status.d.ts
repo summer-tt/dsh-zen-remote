@@ -53,6 +53,7 @@ export interface RemoteServerStatusView {
     state: RemoteStatusState;
     versionMismatch: boolean;
     serverName: string;
+    displayName?: string;
     /** The plugins whose bridge verdict is bridged RIGHT NOW on THIS server. */
     bridgedPlugins: readonly string[];
 }
@@ -136,11 +137,8 @@ export interface RemoteStatusDescription {
     state: 'online' | 'offline' | 'mismatch' | 'revoked' | 'unpaired';
     hoverText: string;
 }
-export declare function describeRemoteStatus(view: RemoteStatusView | undefined | null, t?: RemoteStatusFormatter, 
-/** MS-6: the session on screen — its virtual id picks its OWN server's
- * entry; omitted (or unanswered by the dict) keeps the pre-MS-6 top-level
- * read. */
-sessionId?: string): RemoteStatusDescription;
+/** The virtual id selects its server; an unknown id uses the top-level status. */
+export declare function describeRemoteStatus(view: RemoteStatusView | undefined | null, t?: RemoteStatusFormatter, sessionId?: string): RemoteStatusDescription;
 /** The locale keys `bannerText` needs. */
 export type RemoteBannerTextKey = 'remoteBannerOffline' | 'remoteBannerRevoked' | 'remoteBannerUnpaired' | 'remoteBannerClosedIdle' | 'remoteBannerClosedManual' | 'remoteBannerClosedClient';
 export type RemoteBannerFormatter = (key: RemoteBannerTextKey) => string;
@@ -224,17 +222,10 @@ export declare const REMOTE_STATUS_POLL_MS = 15000;
  * never overwrites a newer table), every GET failure fails its own round,
  * the timer is real while visible and gone while hidden, and becoming
  * visible pulls once immediately. `pollMs` exists for tests: the shipped
- * cadence is far too slow to observe. `hintGapMs` exists for the same
- * reason: the shipped hint gap (default 3000) is far too slow to observe.
+ * cadence is far too slow to observe. Without `networkHint` the store sends
+ * no network-restored hints. `hintGapMs` sets their minimum spacing (3s by default).
  */
-export declare function createRemoteStatusStore(fetchImpl: typeof fetch, visibility?: VisibilitySource, pollMs?: number, 
-/** the network-restored hint source. Omitted → no
- * hint wiring (a host mount, or a test). */
-networkHint?: NetworkHintSource, 
-/** the minimum gap between two client-side hints, ms; default 3000 (the
- * same anti-storm gap the host enforces). Exists for tests, like
- * `pollMs`: the shipped gap is far too slow to observe. */
-hintGapMs?: number): RemoteStatusStore;
+export declare function createRemoteStatusStore(fetchImpl: typeof fetch, visibility?: VisibilitySource, pollMs?: number, networkHint?: NetworkHintSource, hintGapMs?: number): RemoteStatusStore;
 /**
  * The subscribe face both T34 parts hand `useSyncExternalStore`: a VIRTUAL-id
  * session subscribes to the store — the subscription is what keeps it
