@@ -2494,6 +2494,19 @@ test('remote model controls route keeps capabilities and writes on the selected 
   const missing = await read()
   assert.equal(missing.status, 404)
   assert.equal(JSON.parse(missing.body).error.code, 'remote-unsupported')
+
+  let replaceReply
+  const pending = new Promise(resolve => { replaceReply = resolve })
+  let started
+  const invoked = new Promise(resolve => { started = resolve })
+  b.client.invoke = () => { started(); return pending }
+  const oldCall = read()
+  await invoked
+  b.client = makeEntry('b', 'ffffffff', gwUrl, 'B', {}).client
+  replaceReply({ status: 200, body: JSON.stringify({ ok: true, value }) })
+  const stale = await oldCall
+  assert.equal(stale.status, 503)
+  assert.equal(JSON.parse(stale.body).error.code, 'remote-binding-changed')
 })
 
 test('session-host sends directory operations only to the selected Host', async (t) => {
