@@ -7,6 +7,7 @@ import type { RelayPool } from './relay-pool.js'
 import { RelayError } from './relay-client.js'
 import { SESSION_REFERENCE_URI, decodeSessionReferenceUri, encodeSessionReferenceUri } from './session-reference.js'
 import { fromVirtual, toVirtual } from './virtual-id.js'
+import { MAX_DRAFT_REQUEST_BYTES } from './upload-limits.js'
 
 export const NEW_CONVERSATION_ROUTE = '/_dsh/zen-remote/new-conversation'
 
@@ -25,7 +26,7 @@ async function bodyOf(req: IncomingMessage): Promise<Record<string, unknown>> {
   for await (const chunk of req) {
     const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
     size += bytes.length
-    if (size > 2 * 1024 * 1024) throw new NewConversationError(413, 'body-too-large', 'The draft is too large')
+    if (size > MAX_DRAFT_REQUEST_BYTES) throw new NewConversationError(413, 'body-too-large', 'The draft is too large')
     chunks.push(bytes)
   }
   try {
@@ -52,6 +53,9 @@ async function submitRemote(options: Options, hostId: string, request: NewConver
   const relay = requireSessionHostRelay(options.getPool(), hostId)
   if (relay.handshakeInfo?.supportsCreateDraft !== true) {
     throw new NewConversationError(409, 'remote-unsupported', 'The selected Host does not support this new conversation flow')
+  }
+  if (request.images !== undefined && relay.handshakeInfo.supportsCreateDraftImages !== true) {
+    throw new NewConversationError(409, 'draft-images-unsupported', 'The selected Host does not support images in a new conversation')
   }
   const result = await relay.invoke('session', 'createWithFirstMessage', {
     request: { ...request, text: translatedPrompt(request.text, hostId) },

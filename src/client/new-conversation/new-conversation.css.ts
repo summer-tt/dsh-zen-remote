@@ -154,10 +154,118 @@ export const NEW_CONVERSATION_CSS = `
   line-height: calc(24px + var(--dsh-content-font-delta, 0px));
   resize: none;
 }
-.zr-newc-text::placeholder { color: var(--dsw-alias-label-tertiary); }
-.zr-newc-text:focus-visible { outline: none; }
+.zr-newc-text[data-zen-remote="new-conversation-text"]::placeholder { color: var(--dsw-alias-label-tertiary); }
+.zr-newc-text[data-zen-remote="new-conversation-text"]:focus-visible { outline: none; }
 @media (pointer: coarse) {
   .zr-newc-text[data-zen-remote="new-conversation-text"] { font-size: max(16px, var(--dsh-content-font-size, 14px)); }
+}
+
+/* The draft's images, laid out like the native composer's attachment rail
+   (ui-attachment AttachmentRail + ComposerAttachments): 64px rounded
+   thumbnails with a remove control at the top-right corner that shows on
+   hover and stays on touch, edge arrows that page an overflow, and no
+   scrollbar. The card's flex gap (12px) separates every row pair; the
+   thumbnails sit closer to the draft text than the other rows, so pull back
+   6 here, as the native rail does. */
+.zr-newc-images[data-zen-remote="new-conversation-images"] {
+  position: relative;
+  min-width: 0;
+  margin: 0 10px;
+  margin-bottom: -6px;
+}
+.zr-newc-imageRail {
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  /* Edge arrows page the overflow; the scrollbar stays hidden (both engines). */
+  scrollbar-width: none;
+}
+.zr-newc-imageRail::-webkit-scrollbar { display: none; }
+.zr-newc-image {
+  position: relative;
+  flex: none;
+  width: 64px;
+  height: 64px;
+}
+.zr-newc-imagePreview[data-zen-remote="new-conversation-image-preview"] {
+  width: 64px;
+  height: 64px;
+  padding: 0;
+  overflow: hidden;
+  border: 0.5px solid var(--dsw-alias-border-l2-darkmode-thin, var(--dsw-alias-border-l2));
+  border-radius: var(--dsw-radius-xl);
+  background: var(--dsw-alias-interactive-bg-hover);
+  cursor: zoom-in;
+}
+.zr-newc-imagePreview[data-zen-remote="new-conversation-image-preview"]:focus-visible {
+  outline: 2px solid var(--dsw-alias-border-strong, var(--dsw-alias-state-business-primary));
+  outline-offset: 1px;
+}
+.zr-newc-imagePreview[data-zen-remote="new-conversation-image-preview"] img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.zr-newc-imageRemove[data-zen-remote="new-conversation-image-remove"] {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: var(--dsw-alias-button-contrast-fill, var(--dsw-alias-bg-base));
+  color: var(--dsw-alias-label-primary-inverted, var(--dsw-alias-label-primary));
+  font: inherit;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.2s ease-in-out;
+}
+.zr-newc-imageRemove[data-zen-remote="new-conversation-image-remove"]:focus-visible { opacity: 1; }
+.zr-newc-imageRemove[data-zen-remote="new-conversation-image-remove"]:disabled { cursor: default; opacity: 0; }
+@media (hover: hover) {
+  .zr-newc-image:hover .zr-newc-imageRemove[data-zen-remote="new-conversation-image-remove"]:not(:disabled) { opacity: 1; }
+}
+/* Touch surfaces have no hover to reveal the control. */
+@media (hover: none), (pointer: coarse) {
+  .zr-newc-imageRemove[data-zen-remote="new-conversation-image-remove"]:not(:disabled) { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .zr-newc-imageRemove[data-zen-remote="new-conversation-image-remove"] { transition: none; }
+}
+.zr-newc-imageArrow {
+  position: absolute;
+  top: 50%;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  --dsw-elevation-stroke-color: var(--dsw-alias-border-l2-darkmode-thin, var(--dsw-alias-border-l2));
+  border-radius: 999px;
+  background: var(--dsw-specific-input-major);
+  color: var(--dsw-alias-label-secondary);
+  box-shadow: var(--dsw-elevation-panel);
+  font: inherit;
+  cursor: pointer;
+  transform: translateY(-50%);
+}
+.zr-newc-imageArrowLeft { left: 4px; }
+.zr-newc-imageArrowRight { right: 4px; }
+@media (hover: hover) {
+  .zr-newc-imageArrow:hover { background: var(--dsw-alias-interactive-bg-hover-solid, var(--dsw-alias-interactive-bg-hover)); }
+}
+.zr-newc-imageArrow:focus-visible {
+  outline: 2px solid var(--dsw-alias-border-strong, var(--dsw-alias-state-business-primary));
 }
 .zr-newc-footer {
   display: flex;

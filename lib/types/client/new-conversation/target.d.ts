@@ -77,7 +77,9 @@ export declare const MODEL_COMMAND = "/model";
  */
 export declare function isBareModelCommand(text: string): boolean;
 /** Why the submit action is unavailable, as a stable discriminant the panel maps to copy. */
-export type SubmitBlock = 'pick-host' | 'pick-workspace' | 'write-message' | 'pick-model' | 'host-offline';
+export type SubmitBlock = 'pick-host' | 'pick-workspace' | 'write-message' | 'pick-model'
+/** The draft carries images the selected Host cannot take; pasting still works, sending does not. */
+ | 'images-unsupported' | 'host-offline';
 /** The facts the submit gate reads; the panel passes its view's members. */
 export interface SubmitGateInput {
     readonly directory: HostDirectorySnapshot;
@@ -88,6 +90,17 @@ export interface SubmitGateInput {
     readonly hasSelection: boolean;
     /** A previous request awaiting resume, which every gate below yields to. */
     readonly pendingSubmission: boolean;
+    /**
+     * Whether the draft holds at least one image. An image alone is a message:
+     * with one present, empty text is not `write-message`. Absent reads as none.
+     */
+    readonly hasImages?: boolean | undefined;
+    /**
+     * Whether the selected Host cannot take images (an older online remote
+     * Host). Only a draft WITH images is blocked by it, and only after a model
+     * is resolved, like every other gate. Absent reads as supported.
+     */
+    readonly imagesUnavailable?: boolean | undefined;
 }
 /**
  * Why a FRESH send is unavailable, or undefined when it is available.
@@ -98,13 +111,53 @@ export interface SubmitGateInput {
  * any send (see {@link submitActivation}).
  *
  * The order is the order a user meets the prerequisites: a Host, then a
- * Workspace, then text, then a model, and only then the Host's reachability
+ * Workspace, then a message (text or images), then a model, then whether the
+ * Host can take the draft's images, and only then the Host's reachability
  * — an offline Host stays selected, so its message is the last word and only
  * after everything else is in place.
  * @param input - the gate's inputs.
  * @returns the blocking reason, or undefined when the send may go.
  */
 export declare function submitBlockOf(input: SubmitGateInput): SubmitBlock | undefined;
+/** The one member of a browser `File` the paste reader looks at; any object with it stands in under Node. */
+export interface PastedFile {
+    /** The browser's declared MIME type. */
+    readonly type: string;
+}
+/**
+ * What one paste event carries, duck-typed; a real `DataTransfer` has both
+ * members. The lists are `ArrayLike` rather than arrays: a `DataTransfer`'s
+ * `files` and `items` are browser list objects, iterable in modern engines
+ * but not typed as such everywhere, so they are read by index here.
+ * `getData` is not read by this module; it is declared only so a real
+ * `DataTransfer` is assignable without a cast.
+ */
+export interface PastedTransfer<T extends PastedFile = PastedFile> {
+    readonly files?: ArrayLike<T> | undefined;
+    readonly items?: ArrayLike<{
+        readonly kind: string;
+        getAsFile(): T | null;
+    }> | undefined;
+    getData?(format: string): string;
+}
+/**
+ * The image files of one paste, in clipboard order.
+ *
+ * Only the declared MIME prefix decides: anything `image/*` (an SVG, an
+ * empty file, a type the Host will refuse) is passed on, so the owner that
+ * stores the draft gives ONE consistent verdict on format, size and count,
+ * and this pure half repeats none of it. A paste with no image returns an
+ * empty array, which is how the caller knows to leave the text paste alone.
+ *
+ * A browser fills `files` and `items` with the SAME files, so reading both
+ * would add every image twice. `files` is read when it holds anything, and
+ * `items` only when it is empty or absent (some browsers expose a pasted
+ * image through `items` alone). A `files` list that holds no image is final:
+ * falling through to `items` then could only repeat what it already said.
+ * @param transfer - the paste event's clipboard payload.
+ * @returns the pasted image files; empty when the paste carried none.
+ */
+export declare function pastedImages<T extends PastedFile>(transfer: PastedTransfer<T>): T[];
 /** Enter or submit can open the picker, resume a frozen request, send a new draft, or do nothing. */
 export type SubmitActivation = 'open-model-picker' | 'resume' | 'send' | 'blocked';
 /**

@@ -12,10 +12,13 @@ import {
   draftKey,
   hostSelectable,
   isBareModelCommand,
+  pastedImages,
   submitActivation,
   submitBlockOf,
 } from '../src/client/new-conversation/target.ts'
 import { createDraftStore } from '../src/client/new-conversation/draft-store.ts'
+import { createDraftImageStore } from '../src/client/new-conversation/draft-images.ts'
+import { MAX_DRAFT_IMAGE_BYTES } from '../src/upload-limits.ts'
 import { registerNewConversation } from '../src/client/new-conversation/register.ts'
 
 /** An in-memory localStorage stand-in recording every call. */
@@ -175,6 +178,77 @@ test('submitActivation: with nothing pending it sends only when unblocked, other
   // empty draft blocks as "write a message", it does not fall through.
   assert.equal(submitActivation('', readyGate({ text: '' })), 'blocked')
   assert.equal(submitBlockOf(readyGate({ text: '' })), 'write-message')
+})
+
+test('clipboard intake leaves ordinary text alone and takes each pasted image only once', () => {
+  const png = new File(['image'], 'image.png', { type: 'image/png' })
+  const text = new File(['text'], 'note.txt', { type: 'text/plain' })
+  const item = { kind: 'file', getAsFile: () => png }
+  assert.deepEqual(pastedImages({ files: [], items: [{ kind: 'string', getAsFile: () => assert.fail('read text as a file') }] }), [])
+  assert.deepEqual(pastedImages({ files: [text, png], items: [item] }), [png])
+  assert.deepEqual(pastedImages({ files: [], items: [item] }), [png])
+})
+
+test('draft image previews stay on the selected Host and Workspace and release their object URLs', () => {
+  const created = []
+  const revoked = []
+  const images = createDraftImageStore({
+    createObjectURL(file) { created.push(file.name); return `blob:${file.name}` },
+    revokeObjectURL(url) { revoked.push(url) },
+  })
+  const local = { hostId: 'local', workspaceId: undefined, generation: 1 }
+  const remote = { hostId: HOST_A.hostId, workspaceId: 'w1', generation: 2 }
+  const workspace = { ...local, workspaceId: 'w1', generation: 3 }
+  const key = ({ hostId, workspaceId }) => draftKey(hostId, workspaceId)
+  const png = new File([new Uint8Array([1, 2, 3])], 'clipboard.png', { type: 'image/png' })
+  assert.equal(images.add(local, 1, [png]), undefined)
+  const [screenshot] = images.read(key(local))
+  assert.equal(screenshot.url, 'blob:clipboard.png')
+  assert.deepEqual(images.read(key(remote)), [])
+  assert.equal(images.add(remote, 1, [png]), undefined)
+  assert.deepEqual(images.read(key(remote)), [])
+  images.adopt(local.hostId, workspace.workspaceId)
+  assert.equal(images.read(key(workspace))[0], screenshot)
+  assert.deepEqual(images.read(key(local)), [])
+  images.remove(workspace, 2, screenshot.id)
+  assert.equal(images.read(key(workspace)).length, 1)
+  images.remove(workspace, 3, screenshot.id)
+  assert.deepEqual(images.read(key(workspace)), [])
+  assert.deepEqual(revoked, ['blob:clipboard.png'])
+  images.adopt(local.hostId, 'w2')
+  assert.deepEqual(images.read(draftKey(local.hostId, 'w2')), [])
+  assert.deepEqual(created, ['clipboard.png'])
+})
+
+test('pasting skips empty, oversized and unsupported images, and rejected sends leave previews intact', () => {
+  const images = createDraftImageStore({ createObjectURL: () => 'blob:preview', revokeObjectURL: () => {} })
+  const target = { hostId: HOST_A.hostId, workspaceId: 'w1', generation: 1 }
+  const key = draftKey(target.hostId, target.workspaceId)
+  assert.equal(images.add(target, 1, [new File(['svg'], 'clip.svg', { type: 'image/svg+xml' })]), 'unsupported')
+  assert.equal(images.add(target, 1, [new File([], 'empty.png', { type: 'image/png' })]), 'empty')
+  const png = new File(['image'], 'clip.png', { type: 'image/png' })
+  assert.equal(images.add(target, 1, [png]), undefined)
+  const [preview] = images.read(key)
+  const frozen = [preview.id]
+  assert.equal(images.add(target, 1, [new File([new Uint8Array(MAX_DRAFT_IMAGE_BYTES)], 'large.png', { type: 'image/png' })]), 'limit')
+  assert.equal(images.matches(key, frozen), true)
+  assert.equal(images.read(key)[0], preview)
+  assert.equal(images.add(target, 1, [png]), undefined)
+  assert.equal(images.matches(key, frozen), false)
+  assert.equal(images.read(key)[0], preview)
+  images.clearSent(key, frozen)
+  assert.equal(images.read(key).length, 1)
+  assert.notEqual(images.read(key)[0].id, preview.id)
+  images.dispose()
+})
+
+test('image-only drafts can send and only image drafts require remote image support', () => {
+  const imageOnly = readyGate({ text: '', hasImages: true })
+  assert.equal(submitActivation('', imageOnly), 'send')
+  assert.equal(submitBlockOf({ ...imageOnly, imagesUnavailable: true }), 'images-unsupported')
+  assert.equal(submitBlockOf(readyGate({ imagesUnavailable: true })), undefined)
+  assert.equal(submitActivation('', { ...imageOnly, imagesUnavailable: true, pendingSubmission: true }), 'resume')
+  assert.equal(submitActivation('/model', { ...imageOnly, text: '/model' }), 'open-model-picker')
 })
 
 // ---------------------------------------------------------------- target keys

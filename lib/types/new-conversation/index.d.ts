@@ -1,4 +1,5 @@
 import type { Context } from '@deepseek-ai/cordis';
+import { type DraftImagePart } from '../client-data/draft-images.js';
 export { isManagedConversation } from './journal.js';
 export { saveRecentConversationHost } from './preferences.js';
 export interface ConversationModel {
@@ -12,6 +13,7 @@ export interface NewConversationRequest {
     readonly requestId: string;
     readonly model: ConversationModel;
     readonly text: string;
+    readonly images?: readonly DraftImagePart[];
     readonly agentPreset?: string;
     readonly clientTimeZone?: string;
 }
@@ -20,7 +22,7 @@ export declare class NewConversationError extends Error {
     readonly code: string;
     constructor(status: number, code: string, message: string, options?: ErrorOptions);
 }
-/** Parse the complete text-only request before invoking any Host operations. */
+/** Parse the complete request before invoking any Host operations. */
 export declare function parseNewConversationRequest(input: unknown): NewConversationRequest;
 export type ShareState = 'initial' | 'recovering' | 'confirmed';
 export interface NewConversationOptions {

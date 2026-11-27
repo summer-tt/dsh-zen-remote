@@ -6,6 +6,8 @@ const { pathToFileURL } = require('node:url')
 const { test } = require('node:test')
 const { createServer } = require('node:http')
 const { createRelayHandler } = require('../lib/relay-server.js')
+const { createNewConversationRoute } = require('../lib/new-conversation-routes.js')
+const { toVirtual } = require('../lib/virtual-id.js')
 const { createShareStore } = require('../lib/share-store.js')
 const { encodeSessionReferenceUri } = require('../lib/session-reference.js')
 
@@ -14,6 +16,11 @@ const selection = { provider: 'test', model: 'picked', reasoningEffort: 'high' }
 const request = {
   workspaceId: 'workspace-1', creationRequestId: 'create-1', requestId: 'prompt-1',
   model: selection, text: '  First message  ',
+}
+
+const screenshot = {
+  type: 'image', mediaType: 'image/png', name: 'screenshot.png',
+  data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAADElEQVQImWOQlJQEAACaAEy6nTjCAAAAAElFTkSuQmCC',
 }
 
 async function fixture(t) {
@@ -133,6 +140,26 @@ test('validates wire fields, including non-empty text and no caller-selected Ses
   assert.equal(isManagedConversation('zen-conversation-11111111-1111-1111-1111-111111111111'), false)
 })
 
+test('validates draft images without accepting caller-supplied attachment references', async () => {
+  const { parseNewConversationRequest } = await modulePromise
+  const imageOnly = { ...request, text: '', images: [screenshot] }
+  assert.deepEqual(parseNewConversationRequest(imageOnly), imageOnly)
+  assert.deepEqual(parseNewConversationRequest({ ...request, images: [] }), request)
+  for (const images of [null, [null], [{ ...screenshot, data: '' }], [{ ...screenshot, data: 'ab==' }],
+    [{ ...screenshot, mediaType: 'image/svg+xml' }], [{ ...screenshot, receiptId: 'foreign' }], Array(21).fill(screenshot)]) {
+    assert.throws(() => parseNewConversationRequest({ ...request, images }), { code: 'bad-request' })
+  }
+})
+
+test('a model that rejects images is detected before creating a Session', async (t) => {
+  const { services, stored, newHost } = await fixture(t)
+  services.llm.resolveModelInfo = async () => ({ inputModalities: ['text'] })
+  await assert.rejects(newHost().submit('owner', { ...request, images: [screenshot] }), { code: 'draft-model-no-images' })
+  assert.equal(stored.size, 0)
+  await newHost().submit('owner', request)
+  assert.equal(stored.size, 1)
+})
+
 test('records Session-local selection and preset before publication, admits once, and shares only after flushing', async (t) => {
   const { directory, log, stored, currentModel, newHost } = await fixture(t)
   const host = newHost()
@@ -215,6 +242,23 @@ test('recovers a durable inbox receipt after losing the prompt response and uses
   assert.equal(log.filter(event => event[0] === 'prompt').length, 1)
 })
 
+test('image-only submission reuses the accepted request ID after a lost response', async (t) => {
+  const { log, stored, services, newHost } = await fixture(t)
+  const payload = { ...request, text: '', images: [screenshot] }
+  const admit = services.sessionController.prompt
+  services.sessionController.prompt = async (...args) => {
+    await admit(...args)
+    throw new Error('Lost response')
+  }
+  await assert.rejects(newHost().submit('owner', payload), /Lost response/)
+  const [sessionId] = stored.keys()
+  assert.deepEqual(await newHost().submit('owner', payload), { sessionId })
+  assert.deepEqual(log.filter(([event]) => event === 'prompt').map(([, , prompt]) => prompt), [
+    { sessionId, requestId: request.requestId, mode: 'queue', content: [screenshot] },
+  ])
+  await assert.rejects(newHost().submit('owner', { ...payload, images: [{ ...screenshot, data: 'QQ==' }] }), { code: 'creation-conflict' })
+})
+
 test('requires a persistence acknowledgement before sharing or returning', async (t) => {
   const { services, newHost } = await fixture(t)
   services.sessions.flush = async () => false
@@ -262,17 +306,66 @@ test('relay creation authenticates the device, enforces reference access, and pr
   store.share('private-session')
   assert.deepEqual(await invoke(linked), { status: 409, body: { ok: false, error: { code: 'references-require-session' } } })
   assert.equal(log.length, 0)
-  const created = await invoke(request)
+  const payload = { ...request, images: [screenshot] }
+  const created = await invoke(payload)
   assert.equal(created.status, 200)
   assert.equal(store.isShared(created.body.value.sessionId), true)
-  assert.deepEqual(await invoke(request), created)
+  assert.deepEqual(await invoke(payload), created)
   assert.equal(store.unshare(created.body.value.sessionId, 'manual'), true)
   store = createShareStore({ file: shareFile, idleHours: 48 })
   host = newHost()
   handler = createHandler()
-  assert.equal((await invoke(request)).status, 409)
+  assert.equal((await invoke(payload)).status, 409)
   assert.equal(store.isShared(created.body.value.sessionId), false)
-  assert.equal(log.filter(event => event[0] === 'prompt').length, 1)
+  assert.deepEqual(log.filter(([event]) => event === 'prompt').map(([, , prompt]) => prompt.content), [
+    [{ type: 'text', text: request.text }, screenshot],
+  ])
+})
+
+test('draft HTTP requests send image bytes only to the selected Host and keep older text Hosts compatible', async (t) => {
+  const { log, newHost } = await fixture(t)
+  const host = newHost()
+  const relayCalls = []
+  const relays = new Map(['aaaaaaaa', 'bbbbbbbb'].map(hostId => [hostId, {
+    entryId: hostId,
+    client: {
+      state: 'online',
+      handshakeInfo: { serverId: hostId, supportsCreateDraft: true, ...(hostId === 'aaaaaaaa' ? { supportsCreateDraftImages: true } : {}) },
+      invoke: async (...args) => { relayCalls.push([hostId, ...args]); return { sessionId: 'remote-session' } },
+    },
+  }]))
+  const handler = createNewConversationRoute({
+    admit: () => ({}), getPool: () => ({ getByServerId: id => relays.get(id), isVirtual: () => false }),
+    submitLocal: input => host.submit('owner', input), getRecentHost: () => 'local',
+    saveRecentHost: async () => {}, onRemoteCreated() {},
+  })
+  const server = createServer((req, res) => { void handler(req, res).catch(error => res.destroy(error)) })
+  t.after(() => new Promise(resolve => { server.closeAllConnections(); server.close(resolve) }))
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  async function submit(hostId, input) {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/_dsh/zen-remote/new-conversation`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ hostId, request: input }),
+    })
+    return { status: response.status, body: await response.json() }
+  }
+  const payload = { ...request, images: [screenshot] }
+  assert.equal((await submit('local', payload)).status, 200)
+  assert.deepEqual(log.find(([event]) => event === 'prompt')[2].content, [{ type: 'text', text: request.text }, screenshot])
+  assert.equal(relayCalls.length, 0)
+  assert.deepEqual(await submit('bbbbbbbb', payload), { status: 409, body: { ok: false, error: { code: 'draft-images-unsupported' } } })
+  assert.equal(relayCalls.length, 0)
+  assert.deepEqual(await submit('aaaaaaaa', payload), {
+    status: 200, body: { ok: true, value: { sessionId: toVirtual('aaaaaaaa', 'remote-session'), preferenceSaved: true } },
+  })
+  assert.equal((await submit('bbbbbbbb', request)).status, 200)
+  assert.deepEqual(relayCalls, [
+    ['aaaaaaaa', 'session', 'createWithFirstMessage', { request: payload }],
+    ['bbbbbbbb', 'session', 'createWithFirstMessage', { request }],
+  ])
+  // A screenshot above the old text JSON cap must still reach the selected relay.
+  const large = { ...payload, images: [{ ...screenshot, data: 'AAAA'.repeat(600_000) }] }
+  assert.equal((await submit('aaaaaaaa', large)).status, 200)
+  assert.deepEqual(relayCalls.at(-1), ['aaaaaaaa', 'session', 'createWithFirstMessage', { request: large }])
 })
 
 test('updates just the current profile row preference through the config editor', async () => {

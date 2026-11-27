@@ -64,6 +64,10 @@ export declare const DEFAULT_MAX_UPLOAD_BYTES: number;
  * like any other oversized read.
  */
 export declare const MAX_INVOKE_BODY_BYTES: number;
+/** Aggregate raw image bytes in a Session-less draft sent in one JSON request. */
+export declare const MAX_DRAFT_IMAGE_BYTES: number;
+/** Base64 (including per-image padding) plus the existing text and JSON envelope budget. */
+export declare const MAX_DRAFT_REQUEST_BYTES: number;
 /**
  * Cap for ONE forwarded `/api/file` media answer (P55-2): the sub-client's
  * fetch-route wrap pulls a remote session's inline image / media file

@@ -43,6 +43,7 @@ export interface SessionHostSummary {
     displayName: string;
     state: RelayClient['state'];
     supportsCreateDraft?: true;
+    supportsCreateDraftImages?: true;
     supportsWorkspaceAdd?: true;
 }
 /** POST `{serverUrl, code, name}`: redeem a desktop pairing code. */

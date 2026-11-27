@@ -231,6 +231,7 @@ export interface RelayHandshake {
   fingerprints: Record<string, string>
   /** The target can create a Session and accept the initial message in one operation. */
   supportsCreateDraft?: true
+  supportsCreateDraftImages?: true
   supportsWorkspaceAdd?: true
   /**
    * The SERVER's record of THIS device's name (T59) — what the pairing
@@ -1645,6 +1646,7 @@ export function createRelayClient(options: CreateRelayClientOptions): RelayClien
         dshVersion: typeof payload.dshVersion === 'string' ? payload.dshVersion : '',
         fingerprints: isRecord(payload.fingerprints) ? (payload.fingerprints as Record<string, string>) : {},
         ...(payload.supportsCreateDraft === true ? { supportsCreateDraft: true } : {}),
+        ...(payload.supportsCreateDraftImages === true ? { supportsCreateDraftImages: true } : {}),
         ...(payload.supportsWorkspaceAdd === true ? { supportsWorkspaceAdd: true } : {}),
         // T59: the gateway's record of THIS device's name, when the server
         // speaks the field at all (an older server omits it and the client

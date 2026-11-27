@@ -71,6 +71,7 @@ export interface SessionHostSummary {
   displayName: string
   state: RelayClient['state']
   supportsCreateDraft?: true
+  supportsCreateDraftImages?: true
   supportsWorkspaceAdd?: true
 }
 
@@ -1184,6 +1185,7 @@ export function createClientHandler(options: ClientHandlerOptions): ClientHandle
               displayName: serverName ? displayName : serverId,
               state: awaitingHandshake ? 'connecting' : client.state,
               ...(client.handshakeInfo?.supportsCreateDraft === true ? { supportsCreateDraft: true } : {}),
+              ...(client.handshakeInfo?.supportsCreateDraftImages === true ? { supportsCreateDraftImages: true } : {}),
               ...(client.handshakeInfo?.supportsWorkspaceAdd === true ? { supportsWorkspaceAdd: true } : {}),
             })
           }

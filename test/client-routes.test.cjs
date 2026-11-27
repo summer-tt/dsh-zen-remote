@@ -2354,13 +2354,14 @@ test('session-hosts lists local and known paired identities without relay coordi
     makeEntry('e3', undefined, 'http://10.0.0.3:3080', '', { state: 'connecting' }),
   ]
   entries[0].client.handshakeInfo.supportsCreateDraft = true
+  entries[0].client.handshakeInfo.supportsCreateDraftImages = true
   const { server, port } = await startClientServer(makeRow(), { pool: fakePool(entries) })
   t.after(() => closeServer(server))
   const registered = routes.CLIENT_SESSION_HOSTS_ROUTE
   const res = await request(port, { path: registered })
   assert.deepEqual(JSON.parse(res.body), { ok: true, value: [
     { hostId: 'local', displayName: '本机', state: 'online' },
-    { hostId: 'abcd1234', displayName: 'A', state: 'online', supportsCreateDraft: true },
+    { hostId: 'abcd1234', displayName: 'A', state: 'online', supportsCreateDraft: true, supportsCreateDraftImages: true },
     { hostId: 'ffffffff', displayName: 'B', state: 'offline' },
   ] })
   const forwarded = await request(port, { path: registered, headers: { 'x-zen-remote-via': 'gateway' } })
