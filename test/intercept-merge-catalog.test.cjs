@@ -908,19 +908,11 @@ test('T63-fix: session/list answered offline at page load, then the relay serves
 
   // The relay comes up: the serving period opens, the sync fetches the list
   // and announces the row the UI is missing (after the catalog refresh the
-  // same transition emits). T75: the serving period runs a SECOND list pull
-  // — the status re-sync — ahead of the announce, so one status frame per
-  // row precedes the added frames (the row carries no `running`, so the
-  // snapshot reads false).
+  // same transition emits). Hydration must not emit an idle status event.
   relay.transition('online')
   await waitForStream(relay, 1)
-  const [refresh, status, added] = await readSome(iterator, 3)
+  const [refresh, added] = await readSome(iterator, 2)
   assert.deepEqual(refresh, { type: 'emit', event: 'llm/adapters-updated', args: [] })
-  assert.deepEqual(status, {
-    type: 'emit',
-    event: 'api-session/status',
-    args: [toVirtual(SERVER_ID, 'session-shared'), false],
-  })
   assert.deepEqual(added, {
     type: 'emit',
     event: 'api-session/added',
@@ -1473,10 +1465,6 @@ const T75_ROWS = [
   { sessionId: 'session-shared', updatedAt: 5, running: true },
   { sessionId: 'session-idle', updatedAt: 4, running: false },
 ]
-const T75_STATUS_FRAMES = [
-  { type: 'emit', event: 'api-session/status', args: [toVirtual(SERVER_ID, 'session-shared'), true] },
-  { type: 'emit', event: 'api-session/status', args: [toVirtual(SERVER_ID, 'session-idle'), false] },
-]
 
 function offlineRelayWithRows() {
   const relay = createControllableRelay()
@@ -1492,37 +1480,29 @@ function offlineRelayWithRows() {
   return relay
 }
 
-test('T75: a new serving period pushes one status frame per row, and every new period pushes again', async () => {
+test('T75: first serving period hydrates rows silently, reconnect delivers real changes', async () => {
   const relay = offlineRelayWithRows()
   const { iterator, localGate } = await openMergedEvents(relay)
   localGate.push(READY)
   await readSome(iterator, 1)
 
-  // The relay starts serving: the T52 catalog refresh leads, then the two
-  // syncs' synthesized emits — one status frame per row, value from the
-  // snapshot.
   relay.transition('online')
   await waitForStream(relay, 1)
-  const frames = await readSome(iterator, 5)
-  assert.deepEqual(frames[0], { type: 'emit', event: 'llm/adapters-updated', args: [] })
-  assert.deepEqual(
-    frames.filter((frame) => frame.event === 'api-session/status'),
-    T75_STATUS_FRAMES,
-  )
-  assert.equal(frames.filter((frame) => frame.event === 'api-session/added').length, 2, 'the T63 announce still runs beside the status sync')
+  const frames = await readSome(iterator, 3)
+  assert.deepEqual(frames.map(frame => frame.event), ['llm/adapters-updated', 'api-session/added', 'api-session/added'])
+  assert.deepEqual(frames.slice(1).map(frame => frame.args[0].running), [true, false])
 
-  // A SECOND serving period: the status frames are pushed again — the
-  // `announced` dedup gates only the row announcements, never the running
-  // flags — while the announced rows stay quiet.
+  // Only the running session completes during the outage. The idle row
+  // must stay quiet and the completed session must still reach the client.
   relay.transition('offline')
+  relay.invokeValues['session/list'] = { items: T75_ROWS.map(row => ({ ...row, running: false })) }
   relay.transition('online')
-  const frames2 = await readSome(iterator, 3)
-  assert.deepEqual(frames2[0], { type: 'emit', event: 'llm/adapters-updated', args: [] })
-  assert.deepEqual(
-    frames2.filter((frame) => frame.event === 'api-session/status'),
-    T75_STATUS_FRAMES,
-  )
-  assert.equal(frames2.some((frame) => frame.event === 'api-session/added'), false, 'announced rows are not re-announced')
+  assert.deepEqual(await readSome(iterator, 2), [
+    { type: 'emit', event: 'llm/adapters-updated', args: [] },
+    { type: 'emit', event: 'api-session/status', args: [toVirtual(SERVER_ID, 'session-shared'), false] },
+  ])
+  localGate.push({ type: 'emit', event: 'test/sentinel', args: [] })
+  assert.equal((await readSome(iterator, 1))[0].event, 'test/sentinel')
   await iterator.return?.(undefined)
 })
 
@@ -1558,15 +1538,8 @@ test('T75: a real-time status frame that lands mid-fetch outranks the list snaps
   assert.deepEqual(live, { type: 'emit', event: 'api-session/status', args: [toVirtual(SERVER_ID, 'session-shared'), false] })
 
   releaseList()
-  // The snapshot lands: the live frame's session is NOT overwritten (no
-  // second status frame for it); the untouched row passes. The summary
-  // sync's announce rode the same gate and follows — and (PB-26a) because
-  // the live flip to idle predates the announce whose row still says
-  // running, a realigning status frame follows THAT row's added frame
-  // at once (the host's mergeSummary would otherwise re-mark it running
-  // from the stale snapshot). The idle row saw no live frame: added only.
-  const rest = await readSome(iterator, 1)
-  assert.deepEqual(rest, [{ type: 'emit', event: 'api-session/status', args: [toVirtual(SERVER_ID, 'session-idle'), false] }])
+  // A realigning status frame follows the stale added row. The idle row
+  // only gets an added frame, and the live session gets no stale status.
   const added = await readSome(iterator, 3)
   assert.deepEqual(added.map((frame) => frame.event), ['api-session/added', 'api-session/status', 'api-session/added'])
   assert.deepEqual(added[1].args, [toVirtual(SERVER_ID, 'session-shared'), false], 'the realign carries the LIVE value, not the snapshot\'s')
@@ -1590,12 +1563,8 @@ test('T75: the status sync obeys the local-ready gate — it defers until the UI
   localGate.push(READY)
   const ready = (await firstPull).value
   assert.deepEqual(ready, READY)
-  const frames = await readSome(iterator, 5)
-  assert.deepEqual(frames[0], { type: 'emit', event: 'llm/adapters-updated', args: [] })
-  assert.deepEqual(
-    frames.filter((frame) => frame.event === 'api-session/status'),
-    T75_STATUS_FRAMES,
-  )
+  const frames = await readSome(iterator, 3)
+  assert.deepEqual(frames.map(frame => frame.event), ['llm/adapters-updated', 'api-session/added', 'api-session/added'])
   await iterator.return?.(undefined)
 })
 

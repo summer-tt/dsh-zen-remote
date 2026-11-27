@@ -2491,6 +2491,9 @@ async function* mergedEventsStream(deps: MergedEventsStreamDeps): AsyncGenerator
    * newer than the snapshot's `running` — either way the announce must be
    * followed by the live value. Cleared with a fresh serving period. */
   const latestLiveStatus = new Map<string, boolean>()
+  // The DSH client treats an idle status event before roster hydration as a
+  // completion. Only announce a snapshot's idle flag after known running.
+  const deliveredRunning = new Map<string, boolean>()
   const scheduleRetry = (): void => {
     if (retryTimer !== undefined || retryAt.size === 0) return
     const earliest = Math.min(...retryAt.values())
@@ -2550,14 +2553,16 @@ async function* mergedEventsStream(deps: MergedEventsStreamDeps): AsyncGenerator
           if (announced.has(rowId)) continue
           announced.add(rowId)
           channel.push(frame)
+          const snapshotRunning = isPlainObject(row) && row.running === true
+          const observedRunning = latestLiveStatus.get(rowId) ?? snapshotRunning
+          deliveredRunning.set(rowId, observedRunning)
           // PB-26a: the row is born in the UI carrying the snapshot's
           // `running`; when this stream delivered a live status for it the
           // host could not apply (no row yet) or that postdates the
           // snapshot, realign right behind the added frame — only when the
           // two disagree, a matching flag needs no second frame.
-          const liveRunning = latestLiveStatus.get(rowId)
-          if (liveRunning !== undefined && liveRunning !== (isPlainObject(row) && row.running === true)) {
-            channel.push({ type: 'emit', event: 'api-session/status', args: [rowId, liveRunning] })
+          if (observedRunning !== snapshotRunning) {
+            channel.push({ type: 'emit', event: 'api-session/status', args: [rowId, observedRunning] })
           }
         }
         // T65-fix ask bookkeeping: a returned id is announced and done; an
@@ -2610,18 +2615,12 @@ async function* mergedEventsStream(deps: MergedEventsStreamDeps): AsyncGenerator
   let pendingStatusSync = false
   let deferredStatusSync = false
   /**
-   * T75: fetch the server's `session/list` once and push one synthesized
-   * `api-session/status` emit per row (args `[virtualId, row.running]`) — a
-   * NEW serving period's re-sync, because the status flips that happened
-   * while the relay was offline never traveled (the forwarded status emit
-   * only exists while the leg is up, and `runSummarySync`'s one-time row
-   * announcement is deduped by `announced`, so the running flags the UI
-   * holds would stay frozen at page-load state). Runs beside the summary
-   * sync per serving period (its own fetch: the summary round is nudge-
-   * driven and announce-deduped, and bolting a status mode onto it would
-   * tangle both features' bookkeeping for one saved request), gated on the
-   * local `ready` like every synthesized frame, and a failure is
-   * diagnostics only — the next serving period retries.
+   * T75: fetch `session/list` and publish changes to known running state.
+   * Roster hydration establishes initial running flags. On reconnect the
+   * live events missed during the outage are unavailable, and the summary
+   * sync only announces new rows. Reconcile known rows once per serving
+   * period, after the local `ready` frame. The next serving period retries
+   * a failed fetch.
    */
   const runStatusSync = (): void => {
     if (!alive) return
@@ -2647,17 +2646,19 @@ async function* mergedEventsStream(deps: MergedEventsStreamDeps): AsyncGenerator
       (value) => {
         statusSyncInFlight = false
         if (!alive) return
-        const rows = isPlainObject(value) && Array.isArray(value.items) ? value.items : []
+        const rows = relay.state === 'online' && relayIdentityOf(relay)?.serverId === identity.serverId
+          && isPlainObject(value) && Array.isArray(value.items) ? value.items : []
         for (const row of rows) {
           if (!isPlainObject(row) || typeof row.sessionId !== 'string' || row.sessionId === '') continue
           // A real-time frame that landed while this fetch ran is fresher
           // than the snapshot — never overwrite it (T75 race guard).
           if ((liveStatusSeq.get(row.sessionId) ?? 0) > startSeq) continue
-          channel.push({
-            type: 'emit',
-            event: 'api-session/status',
-            args: [toVirtual(identity.serverId, row.sessionId), row.running === true],
-          })
+          const virtualId = toVirtual(identity.serverId, row.sessionId)
+          const running = row.running === true
+          const previous = deliveredRunning.get(virtualId)
+          if (previous === undefined || running === previous) continue
+          deliveredRunning.set(virtualId, running)
+          channel.push({ type: 'emit', event: 'api-session/status', args: [virtualId, running] })
         }
         // The serving period that queued mid-fetch is still unserved by THIS
         // round (its snapshot predates it) — its own round runs now.
@@ -2701,9 +2702,7 @@ async function* mergedEventsStream(deps: MergedEventsStreamDeps): AsyncGenerator
         clock.clearTimeout(retryTimer)
         retryTimer = undefined
       }
-      // T75: a new serving period re-syncs RUNNING state too — the flips
-      // that happened inside the offline window never traveled, so every
-      // row's running flag is re-pushed from a fresh snapshot.
+      // Restore running changes that did not travel while the relay was offline.
       runStatusSync()
     }
     // T63: a NEW serving period is the page-load hole closing — the UI's
@@ -2877,6 +2876,7 @@ async function* mergedEventsStream(deps: MergedEventsStreamDeps): AsyncGenerator
               const running = args?.[1]
               if (typeof virtualId === 'string' && typeof running === 'boolean') {
                 latestLiveStatus.set(virtualId, running)
+                deliveredRunning.set(virtualId, running)
                 if (!announced.has(virtualId)) handleForwardedBatch([virtualId])
               }
             }
@@ -3865,6 +3865,9 @@ async function* mergedEventsStreamMulti(deps: MergedEventsStreamMultiDeps): Asyn
   let summarySyncInFlight = false
   let deferredSummarySync = false
   const latestLiveStatus = new Map<string, boolean>()
+  // The DSH client treats an idle status event before roster hydration as a
+  // completion. Only announce a snapshot's idle flag after known running.
+  const deliveredRunning = new Map<string, boolean>()
   let statusSeq = 0
   const liveStatusSeq = new Map<string, number>()
   const pendingRemovedIds = new Set<string>()
@@ -3960,9 +3963,11 @@ async function* mergedEventsStreamMulti(deps: MergedEventsStreamMultiDeps): Asyn
           if (announced.has(rowId)) continue
           announced.add(rowId)
           channel.push(frame)
-          const liveRunning = latestLiveStatus.get(rowId)
-          if (liveRunning !== undefined && liveRunning !== (isPlainObject(row) && row.running === true)) {
-            channel.push({ type: 'emit', event: 'api-session/status', args: [rowId, liveRunning] })
+          const snapshotRunning = isPlainObject(row) && row.running === true
+          const observedRunning = latestLiveStatus.get(rowId) ?? snapshotRunning
+          deliveredRunning.set(rowId, observedRunning)
+          if (observedRunning !== snapshotRunning) {
+            channel.push({ type: 'emit', event: 'api-session/status', args: [rowId, observedRunning] })
           }
         }
         for (const id of result.round.ids) {
@@ -3985,8 +3990,7 @@ async function* mergedEventsStreamMulti(deps: MergedEventsStreamMultiDeps): Asyn
     if (!ids.some((id) => !announced.has(id) && !askedForGood.has(id) && !retryAt.has(id))) return
     runSummarySync(ids)
   }
-  /** T75 per slot: re-push every row's running flag from a fresh snapshot
-   * of THIS server when its serving period starts. */
+  /** T75 per slot: reconcile this server's running flags on reconnect. */
   const runStatusSync = (slot: PoolEventSlot): void => {
     if (!alive) return
     if (!localOpened) {
@@ -4010,14 +4014,14 @@ async function* mergedEventsStreamMulti(deps: MergedEventsStreamMultiDeps): Asyn
         const rows = isPlainObject(value) && Array.isArray(value.items) ? value.items : []
         for (const row of rows) {
           if (!isPlainObject(row) || typeof row.sessionId !== 'string' || row.sessionId === '') continue
-          if ((liveStatusSeq.get(row.sessionId) ?? 0) > startSeq) continue
           const virtualId = toVirtual(slot.serverId, row.sessionId)
+          if ((liveStatusSeq.get(virtualId) ?? 0) > startSeq) continue
           noteSessionSeen(virtualId)
-          channel.push({
-            type: 'emit',
-            event: 'api-session/status',
-            args: [virtualId, row.running === true],
-          })
+          const running = row.running === true
+          const previous = deliveredRunning.get(virtualId)
+          if (previous === undefined || running === previous) continue
+          deliveredRunning.set(virtualId, running)
+          channel.push({ type: 'emit', event: 'api-session/status', args: [virtualId, running] })
         }
         if (slot.statusPending) {
           slot.statusPending = false
@@ -4041,7 +4045,9 @@ async function* mergedEventsStreamMulti(deps: MergedEventsStreamMultiDeps): Asyn
     askedForGood.clear()
     askAttempts.clear()
     retryAt.clear()
-    latestLiveStatus.clear()
+    for (const id of latestLiveStatus.keys()) {
+      if (fromVirtual(id)?.serverId === slot.serverId) latestLiveStatus.delete(id)
+    }
     if (retryTimer !== undefined) {
       clock.clearTimeout(retryTimer)
       retryTimer = undefined
@@ -4094,14 +4100,15 @@ async function* mergedEventsStreamMulti(deps: MergedEventsStreamMultiDeps): Asyn
               const rowId = Array.isArray(frame.args) ? frame.args[0] : undefined
               const rawRunning = Array.isArray(frame.args) ? frame.args[1] : undefined
               if (typeof rowId === 'string' && rowId !== '') {
-                liveStatusSeq.set(rowId, ++statusSeq)
                 if (typeof rawRunning === 'boolean') deps.onSessionStatus?.(slot.serverId, rowId, rawRunning)
               }
               const args = isPlainObject(rewritten) && Array.isArray(rewritten.args) ? rewritten.args : undefined
               const virtualId = args?.[0]
               const running = args?.[1]
               if (typeof virtualId === 'string' && typeof running === 'boolean') {
+                liveStatusSeq.set(virtualId, ++statusSeq)
                 latestLiveStatus.set(virtualId, running)
+                deliveredRunning.set(virtualId, running)
                 if (!announced.has(virtualId)) handleForwardedBatch([virtualId])
               }
             }
@@ -4179,6 +4186,12 @@ async function* mergedEventsStreamMulti(deps: MergedEventsStreamMultiDeps): Asyn
         toRemove.add(id)
         latestLiveStatus.delete(id)
       }
+    }
+    for (const id of deliveredRunning.keys()) {
+      if (belongsHere(id)) deliveredRunning.delete(id)
+    }
+    for (const id of liveStatusSeq.keys()) {
+      if (belongsHere(id)) liveStatusSeq.delete(id)
     }
     midFlightBatches = midFlightBatches.filter((id) => !belongsHere(id))
     askingNow = askingNow.filter((id) => !belongsHere(id))

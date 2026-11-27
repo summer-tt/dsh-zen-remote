@@ -715,6 +715,35 @@ test('MS-3 modelCatalog: per-server caches, displayName-prefixed group names, of
 
 // -- 6. the multi-server $zr/events stream -----------------------------------------
 
+test('pooled session status hydrates silently and reconciles only the reconnecting Host', async (t) => {
+  const { relayA, relayB } = bothRelays()
+  const id = 'session-common'
+  relayA.invokeValues['session/list'] = { items: [{ sessionId: id, running: true }] }
+  relayB.invokeValues['session/list'] = { items: [{ sessionId: id, running: false }] }
+  const { gateway, localGate } = createMergeGateway()
+  const { handle } = installPool(gateway, bothPool(relayA, relayB))
+  const signal = new AbortController()
+  t.after(() => { signal.abort(); handle.uninstall() })
+  const stream = await gateway.wireTap('$events', { args: {} }, undefined, undefined, undefined, { signal: signal.signal })
+  const iterator = stream[Symbol.asyncIterator]()
+  localGate.push({ type: 'ready' })
+  const initial = await readSome(iterator, 4)
+  assert.deepEqual(initial.map(frame => frame.type === 'ready' ? 'ready' : frame.event), [
+    'ready', 'llm/adapters-updated', 'api-session/added', 'api-session/added',
+  ])
+  const byId = Object.fromEntries(initial.slice(2).map(frame => [frame.args[0].sessionId, frame.args[0].running]))
+  assert.deepEqual(byId, { [VA(id)]: true, [VB(id)]: false })
+
+  relayA.transition('offline')
+  relayA.invokeValues['session/list'] = { items: [{ sessionId: id, running: false }] }
+  relayA.transition('online')
+  assert.deepEqual(await readSome(iterator, 2), [
+    { type: 'emit', event: 'llm/adapters-updated', args: [] },
+    { type: 'emit', event: 'api-session/status', args: [VA(id), false] },
+  ])
+  await iterator.return?.()
+})
+
 function waterfall(eventId, agentId) {
   return { type: 'waterfall', event: 'tool', eventId, agentId, request: { toolName: 'shell' } }
 }
@@ -960,10 +989,9 @@ test('PAS-5: re-adding the same serverId preserves incremented workspaceEpochs a
   wsLocalGate.push({ type: 'baseline', value: { items: [], archivedSessionIds: [], pinnedSessionIds: [] } })
   await readSome(wsIter, 1)
   eventsLocalGate.push({ type: 'ready' })
-  await readSome(evIter, 3) // ready, llm/adapters-updated, api-session/added (or status)
-  // Drain any remaining status frame from initial sync so channel is quiet before remove.
+  const initialEvents = await readSome(evIter, 3)
+  assert.equal(initialEvents[2].event, 'api-session/added', 'initial idle state arrives as a summary')
   await settle()
-  await evIter.next()
 
   const legWs1 = relayA1.streams.find((leg) => leg.namespace === 'workspace')
   legWs1.gate.push(workspaceBaseline('w-1', 'WS1', ['s-rejoin']))
@@ -992,7 +1020,7 @@ test('PAS-5: re-adding the same serverId preserves incremented workspaceEpochs a
   assert.equal(wsFrames2[0].workspace.workspaceId, VA('#1~w-1'), 're-added server must use incremented workspaceEpochs id')
 
   // On $events, s-rejoin was cleared from `announced` on removal, so it re-announces via api-session/added.
-  const evAfterReadd = await readSome(evIter, 3)
+  const evAfterReadd = await readSome(evIter, 2)
   const reAdded = evAfterReadd.find((f) => f.type === 'emit' && f.event === 'api-session/added')
   assert.deepEqual(reAdded?.args?.[0]?.sessionId, VA('s-rejoin'))
 
