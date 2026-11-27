@@ -4,7 +4,7 @@ import { fromVirtual } from '../virtual-id.js'
 import { DraftTarget, draftKey, hostSelectable, type HostDirectorySnapshot, type HostId, type Source } from './new-conversation/target.ts'
 import { browserDraftStorage, createDraftStore } from './new-conversation/draft-store.ts'
 import { draftCompletionSessions } from './new-conversation/completion-sessions.ts'
-import type { DraftFileCandidate } from './new-conversation/completion.ts'
+import { bareSessionOnlyCommand, type DraftFileCandidate } from './new-conversation/completion.ts'
 import { createDraftImageStore, createPendingImageStorage, encodeDraftImage, type DraftImageFailure, type DraftImageFile } from './new-conversation/draft-images.ts'
 import { NativeDraftComposer, NativeDraftTarget, NewConversationPanel, type ModelSelection, type NewConversationView, type SubmitInput } from './new-conversation/NewConversationPanel.tsx'
 import type { RemoteDirectoryListing, RemoteWorkspaceActions } from './new-conversation/RemoteWorkspaceDialog.tsx'
@@ -78,7 +78,7 @@ function copy(zh: boolean): NewConversationView['copy'] {
     ariaImages: '草稿图片', ariaRemoveImage: '移除图片 {name}',
     ariaImageScrollLeft: '向左滚动图片', ariaImageScrollRight: '向右滚动图片',
     ariaImagePreviewDialog: '原图预览', ariaImagePreviewClose: '关闭原图预览', ariaOpenOriginal: '查看原图',
-    writeOrPasteFirst: '请输入问题或粘贴图片',
+    writeOrPasteFirst: '输入消息，使用 / 查看指令，使用 @ 引用',
     resumeImagesHint: '重试会继续提交上次发送的文字、图片和模型。',
     title: '新会话', hostLabel: 'Host', workspaceLabel: '工作区', localHost: '本机', chooseWorkspace: '选择工作区', noWorkspaces: '这个 Host 没有可用工作区', loadingHosts: '正在加载 Host', directoryFailed: '无法读取 Host 列表', retry: '重试', offlineHost: '离线', unpairedNotice: '上次使用的 Host 已解除配对，已预选本机。', modelUnset: '选择模型', openModelPicker: '打开模型面板', retrySubmission: '重试上一次提交', resumeHint: '重试会继续提交上次发送的文字和模型。', submit: '发送', submitting: '正在发送', pickWorkspaceFirst: '请先选择工作区', pickHostFirst: '请先选择 Host', writeFirstMessage: '请输入问题', pickModelFirst: '请先选择模型', hostOffline: '所选 Host 当前不可用', ariaHostPicker: '选择 Host', ariaWorkspacePicker: '选择工作区', ariaOpenModelPicker: '选择模型',
   } : {
@@ -90,7 +90,7 @@ function copy(zh: boolean): NewConversationView['copy'] {
     ariaImages: 'Draft images', ariaRemoveImage: 'Remove image {name}',
     ariaImageScrollLeft: 'Scroll images left', ariaImageScrollRight: 'Scroll images right',
     ariaImagePreviewDialog: 'Original image preview', ariaImagePreviewClose: 'Close original image preview', ariaOpenOriginal: 'View original',
-    writeOrPasteFirst: 'Enter your question or paste an image',
+    writeOrPasteFirst: 'Write a message, use / for commands or @ for references',
     resumeImagesHint: 'Retry uses the text, images, and model from the previous submission.',
     title: 'New conversation', hostLabel: 'Host', workspaceLabel: 'Workspace', localHost: 'Local', chooseWorkspace: 'Choose a workspace', noWorkspaces: 'No workspaces on this Host', loadingHosts: 'Loading Hosts', directoryFailed: 'Could not load Hosts', retry: 'Retry', offlineHost: 'Offline', unpairedNotice: 'The previous Host was unpaired. Local is selected.', modelUnset: 'Select a model', openModelPicker: 'Open model picker', retrySubmission: 'Retry previous submission', resumeHint: 'Retry uses the text and model from the previous submission.', submit: 'Send', submitting: 'Sending', pickWorkspaceFirst: 'Choose a workspace first', pickHostFirst: 'Choose a Host first', writeFirstMessage: 'Enter your question first', pickModelFirst: 'Choose a model first', hostOffline: 'The selected Host is unavailable', ariaHostPicker: 'Choose Host', ariaWorkspacePicker: 'Choose workspace', ariaOpenModelPicker: 'Choose model',
   }
@@ -437,6 +437,11 @@ export function mountNewConversation(ctx: ClientContext): ((workspaceId?: string
     const storageKey = pendingKey(hostId, workspaceId)
     const existing = readPending(hostId, workspaceId)
     if (input.resume && existing === null) return { ok: false as const, message: words.writeFirstMessage }
+    const text = existing?.text ?? input.text ?? drafts.read(hostId, workspaceId)
+    const sessionCommand = existing === null ? bareSessionOnlyCommand(text) : undefined
+    if (sessionCommand !== undefined) return { ok: false as const, message: zh
+      ? `请打开会话后再使用 /${sessionCommand}。`
+      : `Open a session before using /${sessionCommand}.` }
     const staged = input.selection ?? model()
     if (existing === null && (staged === null || !matches(catalog, staged))) {
       return { ok: false as const, message: words.pickModelFirst }
@@ -451,7 +456,7 @@ export function mountNewConversation(ctx: ClientContext): ((workspaceId?: string
     }
     const revision = textRevision.get(key) ?? 0
     const frozen: StoredSubmission = existing ?? {
-      workspaceId, text: input.text ?? drafts.read(hostId, workspaceId), model: staged,
+      workspaceId, text, model: staged,
       clientTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       ...(chosenPreset === undefined ? {} : { agentPreset: chosenPreset }),
       ...(currentImages.length === 0 ? {} : { imageIds: currentImages.map(image => image.id) }),

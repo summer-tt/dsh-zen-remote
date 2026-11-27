@@ -18,7 +18,7 @@ import {
 } from '../src/client/new-conversation/target.ts'
 import { createDraftStore } from '../src/client/new-conversation/draft-store.ts'
 import { draftCompletionSessions } from '../src/client/new-conversation/completion-sessions.ts'
-import { detectDraftCompletion, formatDraftFileMention, formatDraftSessionMention, replaceDraftCompletion } from '../src/client/new-conversation/completion.ts'
+import { detectDraftCompletion, formatDraftFileMention, formatDraftSessionMention, bareSessionOnlyCommand, replaceDraftCompletion } from '../src/client/new-conversation/completion.ts'
 import { createDraftImageStore } from '../src/client/new-conversation/draft-images.ts'
 import { MAX_DRAFT_IMAGE_BYTES } from '../src/upload-limits.ts'
 import { registerNewConversation } from '../src/client/new-conversation/register.ts'
@@ -291,6 +291,7 @@ test('draft completion replaces only the trigger span with native path and Sessi
     'read @NOTES.md, please')
   assert.equal(detectDraftCompletion('@"README.md"', 12), null)
   assert.equal(replaceDraftCompletion('/model', detectDraftCompletion('/model', 3), '').text, '')
+  assert.equal(replaceDraftCompletion('/file after', detectDraftCompletion('/file after', 3), '').text, ' after')
   const session = { id: 'session-中文', label: 'Name]\\test' }
   const payload = Buffer.from(JSON.stringify(session.id)).toString('base64url')
   const mention = formatDraftSessionMention(session)
@@ -301,7 +302,7 @@ test('draft completion replaces only the trigger span with native path and Sessi
   })
 })
 
-test('draft Session candidates refresh from the selected local workspace and exclude other Hosts', () => {
+test('draft Session candidates use the local Host roster or narrow to a selected workspace', () => {
   const local = { hostId: LOCAL_HOST, workspaceId: 'w1' }
   const remote = 'zr~aaaaaaaa~remote-1'
   const workspaces = [
@@ -312,7 +313,7 @@ test('draft Session candidates refresh from the selected local workspace and exc
   const sessions = {
     owner: row('owner', { displayTitle: 'Workspace session', updatedAt: 11 }),
     blank: row('blank', { blank: true }), archived: row('archived'), child: row('child', { origin: 'subagent' }), [remote]: row(remote),
-    older: row('older'), other: row('other'),
+    older: row('older'), other: row('other'), loose: row('loose', { title: 'Unassigned' }),
   }
   assert.deepEqual(draftCompletionSessions(local, workspaces, sessions, ['archived']).map(row => [row.id, row.label]), [
     ['owner', 'Workspace session'], ['older', 'older'],
@@ -321,7 +322,20 @@ test('draft Session candidates refresh from the selected local workspace and exc
   assert.equal(draftCompletionSessions(local, workspaces, sessions, ['archived'])[0].label, 'Renamed')
   assert.deepEqual(draftCompletionSessions({ ...local, workspaceId: 'w2' }, workspaces, sessions, []).map(row => row.id), ['other'])
   assert.deepEqual(draftCompletionSessions({ ...local, hostId: HOST_A.hostId }, workspaces, sessions, []), [])
-  assert.deepEqual(draftCompletionSessions({ ...local, workspaceId: undefined }, workspaces, sessions, []), [])
+  assert.deepEqual(draftCompletionSessions({ ...local, workspaceId: undefined }, workspaces, sessions, ['archived']).map(row => row.id), ['owner', 'older', 'other', 'loose'])
+  assert.deepEqual(draftCompletionSessions({ hostId: HOST_A.hostId, workspaceId: undefined }, workspaces, sessions, []), [])
+  assert.deepEqual(draftCompletionSessions({ ...local, workspaceId: 'missing' }, workspaces, sessions, []), [])
+})
+
+test('only bare session commands are refused by fresh draft submission', () => {
+  for (const command of ['compact', 'export', 'rewind', 'undo', '压缩', '导出']) {
+    assert.equal(bareSessionOnlyCommand(`  /${command} arguments`), undefined)
+    assert.equal(bareSessionOnlyCommand(`/${command}`), command)
+    assert.equal(bareSessionOnlyCommand(`explain /${command}`), undefined)
+    assert.equal(bareSessionOnlyCommand(`/${command}-custom`), undefined)
+  }
+  assert.equal(bareSessionOnlyCommand('/model'), undefined)
+  assert.equal(bareSessionOnlyCommand('@export'), undefined)
 })
 
 // ---------------------------------------------------------------- target keys

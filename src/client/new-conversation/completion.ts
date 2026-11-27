@@ -21,6 +21,17 @@ export interface DraftCompletionToken {
 const WORD_CHAR = /[\p{L}\p{N}_]/u
 const WHITESPACE = /\s/u
 
+/** These native actions require an open Session and never run in a draft. */
+export const SESSION_ONLY_COMMANDS = [
+  { name: 'compact', alias: '压缩' }, { name: 'export', alias: '导出' }, { name: 'rewind' }, { name: 'undo' },
+] as const
+
+export function bareSessionOnlyCommand(text: string): string | undefined {
+  const token = /^\/([^\s]+)$/u.exec(text.trim())?.[1]
+  return token !== undefined && SESSION_ONLY_COMMANDS.some(command => command.name === token || ('alias' in command && command.alias === token))
+    ? token : undefined
+}
+
 /** Use the native @ grammar first, then the native slash word and URL boundaries. */
 export function detectDraftCompletion(text: string, caret: number): DraftCompletionToken | null {
   if (!Number.isInteger(caret) || caret < 1 || caret > text.length) return null
@@ -46,8 +57,8 @@ export function detectDraftCompletion(text: string, caret: number): DraftComplet
     const prev = before.charAt(start - 1)
     if (WORD_CHAR.test(prev) || prev === '/') continue
     if (prev === ':' && start >= 2 && !WHITESPACE.test(before.charAt(start - 2))) continue
-    const modelToken = /^\/model(?=$|\s)/u.exec(text.slice(start))?.[0]
-    const end = modelToken === undefined ? caret : Math.max(caret, start + modelToken.length)
+    const actionToken = /^\/(?:model|file)(?=$|\s)/u.exec(text.slice(start))?.[0]
+    const end = actionToken === undefined ? caret : Math.max(caret, start + actionToken.length)
     return { trigger: '/', query: before.slice(start + 1), quoted: false, position: start === leading ? 'leading' : 'inline', span: { start, end } }
   }
   return null
@@ -77,7 +88,7 @@ export function replaceDraftCompletion(text: string, token: DraftCompletionToken
   return { text: text.slice(0, start) + insertion + tail, caret: start + insertion.length }
 }
 
-/** All draft Session rows already share the selected workspace; keep the store's recency order. */
+/** Keep the eligible Session rows in the store's recency order. */
 export function matchDraftCompletionSessions(sessions: readonly DraftCompletionSession[], query: string): readonly DraftCompletionSession[] {
   const needle = query.toLocaleLowerCase()
   return sessions.filter(({ id, label, cwd }) => id.toLocaleLowerCase().includes(needle)

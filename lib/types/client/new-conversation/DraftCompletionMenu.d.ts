@@ -1,6 +1,6 @@
 import { type KeyboardEvent, type RefObject } from 'react';
 import type { NewConversationPanelActions, NewConversationView } from './NewConversationPanel.tsx';
-export declare function useDraftCompletion(view: NewConversationView, actions: NewConversationPanelActions, editor: RefObject<HTMLTextAreaElement>, disabled: boolean, legacy: boolean): {
+export declare function useDraftCompletion(view: NewConversationView, actions: NewConversationPanelActions, editor: RefObject<HTMLTextAreaElement>, disabled: boolean, legacy: boolean, pickImages?: () => void): {
     readCaret: (el: HTMLTextAreaElement) => void;
     onKeyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => boolean;
     onBlur: () => void;

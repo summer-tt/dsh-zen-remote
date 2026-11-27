@@ -350,6 +350,15 @@ test('draft HTTP requests send image bytes only to the selected Host and keep ol
     })
     return { status: response.status, body: await response.json() }
   }
+  const localRef = encodeSessionReferenceUri('local-source')
+  const remoteRef = encodeSessionReferenceUri(toVirtual('aaaaaaaa', 'shared-source'))
+  for (const [hostId, uri] of [['local', remoteRef], ['bbbbbbbb', remoteRef], ['aaaaaaaa', localRef]]) {
+    assert.deepEqual(await submit(hostId, { ...request, text: `@[Session](${uri})` }), {
+      status: 400, body: { ok: false, error: { code: 'remote-mismatch' } },
+    })
+  }
+  assert.equal(log.length, 0)
+  assert.equal(relayCalls.length, 0)
   const payload = { ...request, images: [screenshot] }
   assert.equal((await submit('local', payload)).status, 200)
   assert.deepEqual(log.find(([event]) => event === 'prompt')[2].content, [{ type: 'text', text: request.text }, screenshot])

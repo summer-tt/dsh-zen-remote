@@ -10,16 +10,17 @@ interface SessionRow {
   readonly updatedAt: number
 }
 
-/** Local drafts can cite sessions already visible in the selected workspace. */
+/** Local drafts cite visible sessions. A selected workspace narrows the menu. */
 export function draftCompletionSessions(target: { hostId: string; workspaceId: string | undefined },
   workspaces: readonly { workspaceId: string; sessionIds: readonly string[] }[],
   sessions: Readonly<Record<string, SessionRow | undefined>>, archivedIds: readonly string[],
 ) {
-  if (target.hostId !== 'local' || target.workspaceId === undefined) return []
-  const workspace = workspaces.find(row => row.workspaceId === target.workspaceId)
-  if (workspace === undefined) return []
+  if (target.hostId !== 'local') return []
+  const ids = target.workspaceId === undefined
+    ? Object.keys(sessions)
+    : workspaces.find(row => row.workspaceId === target.workspaceId)?.sessionIds ?? []
   const archived = new Set(archivedIds)
-  return workspace.sessionIds.flatMap(id => {
+  return ids.flatMap(id => {
     if (fromVirtual(id) !== undefined || archived.has(id)) return []
     const row = sessions[id]
     if (row === undefined || row.id !== id || row.blank === true || row.origin === 'subagent') return []

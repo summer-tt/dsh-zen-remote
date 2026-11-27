@@ -748,6 +748,8 @@ export function NewConversationComposer({ useView, actions, legacy = false }: Ne
   const shownFailure = failure !== null && failure.generation === target.generation ? failure.message : null
   const hintId = useId()
   const editor = useRef<HTMLTextAreaElement>(null)
+  const imagePicker = useRef<HTMLInputElement>(null)
+  const imagePickerTarget = useRef<number>()
   const composition = useRef<ReturnType<typeof observeComposition> | undefined>(undefined)
   useEffect(() => {
     const document = editor.current?.ownerDocument
@@ -763,7 +765,6 @@ export function NewConversationComposer({ useView, actions, legacy = false }: Ne
   const gate = gateInput(view)
   /** A bare `/model` turns the submit action into the picker's opener. */
   const bareModel = isBareModelCommand(text)
-  const block = bareModel ? null : submitBlock(view)
   const offline = hostEntry(directory, target.hostId)?.status === 'offline'
   /** Neither typing nor pasting is possible: the roster is not in, or a submit is in flight. */
   const locked = !ready || submitting
@@ -774,7 +775,14 @@ export function NewConversationComposer({ useView, actions, legacy = false }: Ne
    * message at all. Text-only pending requests are included for that reason.
    */
   const pasteLocked = locked || pending
-  const completion = useDraftCompletion(view, actions, editor, pasteLocked, legacy)
+  const pickImages = pasteLocked || view.imageSubmitUnavailable === true ? undefined : () => {
+    imagePickerTarget.current = target.generation
+    imagePicker.current?.click()
+  }
+  const bareFile = !pending && text.trim() === '/file'
+  const localAction = bareModel || bareFile
+  const block = localAction ? null : submitBlock(view)
+  const completion = useDraftCompletion(view, actions, editor, pasteLocked, legacy, pickImages)
   /**
    * The visible images cannot be REMOVED while the frozen request carried
    * images: that retry resends the images it froze, and an edit here would
@@ -790,6 +798,10 @@ export function NewConversationComposer({ useView, actions, legacy = false }: Ne
    * first, then a pending resume, then a gated fresh send.
    */
   const activate = (): void => {
+    if (bareFile) {
+      if (pickImages !== undefined && actions.onTextChange('', target.generation, text)) pickImages()
+      return
+    }
     switch (submitActivation(text, gate)) {
       case 'open-model-picker':
         // The command is consumed the way the native composer consumes a bare one.
@@ -940,6 +952,16 @@ export function NewConversationComposer({ useView, actions, legacy = false }: Ne
           }}
         />
 
+        <input ref={imagePicker} type="file" hidden multiple accept="image/png,image/jpeg,image/webp,image/gif"
+          onChange={event => {
+            const input = event.currentTarget
+            const files = Array.from(input.files ?? [])
+            input.value = ''
+            if (imagePickerTarget.current !== target.generation || pasteLocked || view.imageSubmitUnavailable === true || files.length === 0) return
+            setFailure(null)
+            actions.onPasteImages(target.generation, files)
+          }} />
+
         <footer className="zr-newc-footer">
           {/* The model seat. With a mounted picker node (T3 DraftPicker) the
               node IS the control and owns its own opener; without one the seat
@@ -967,10 +989,10 @@ export function NewConversationComposer({ useView, actions, legacy = false }: Ne
             type="button"
             className="zr-newc-submit"
             data-zen-remote="new-conversation-submit"
-            aria-label={submitting ? copy.submitting : bareModel ? copy.openModelPicker : pending ? copy.retrySubmission : copy.submit}
+            aria-label={submitting ? copy.submitting : bareModel ? copy.openModelPicker : bareFile ? copy.ariaImages : pending ? copy.retrySubmission : copy.submit}
             aria-busy={submitting}
-            disabled={(!bareModel && block !== null) || submitting}
-            {...(!bareModel && block !== null && block !== copy.writeFirstMessage && !submitting ? { 'aria-describedby': hintId } : {})}
+            disabled={block !== null || (bareFile && pickImages === undefined) || submitting}
+            {...(block !== null && block !== copy.writeFirstMessage && !submitting ? { 'aria-describedby': hintId } : {})}
             onClick={activate}
           >
             {submitting ? (
@@ -986,14 +1008,14 @@ export function NewConversationComposer({ useView, actions, legacy = false }: Ne
           </button>
         </footer>
       </div>
-      {block !== null && block !== copy.writeFirstMessage && !bareModel && !submitting && (
+      {block !== null && block !== copy.writeFirstMessage && !submitting && (
         <p id={hintId} className="zr-newc-hint" data-zen-remote="new-conversation-hint">{block}</p>
       )}
       {/* The resume hint names what the action will do, so the user does not
           expect the edited draft to be what resumes; a frozen request that
           carried images says so. It is separate from the submit's own
           described-by, which stays on the gate hint above. */}
-      {pending && !bareModel && !submitting && (
+      {pending && !submitting && (
         <p className="zr-newc-hint" role="status" data-zen-remote="new-conversation-resume-hint" data-images={pendingImages || undefined}>
           {pendingImages ? copy.resumeImagesHint : copy.resumeHint}
         </p>

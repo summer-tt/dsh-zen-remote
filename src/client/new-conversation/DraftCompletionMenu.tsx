@@ -1,11 +1,11 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type RefObject } from 'react'
 import {
-  IconChevronRightOutlineRegular, IconDataOutlineRegular, MenuSurface, rankByName, ReferenceIconRegular,
+  IconChevronRightOutlineRegular, IconDataOutlineRegular, IconPaperclipOutlineRegular, MenuSurface, rankByName, ReferenceIconRegular,
   relativeTime, useAnchoredMaxHeight,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import {
   detectDraftCompletion, formatDraftFileMention, formatDraftSessionMention, matchDraftCompletionSessions,
-  replaceDraftCompletion, type DraftCompletionToken, type DraftFileCandidate,
+  replaceDraftCompletion, SESSION_ONLY_COMMANDS, type DraftCompletionToken, type DraftFileCandidate,
 } from './completion.ts'
 import type { NewConversationPanelActions, NewConversationView } from './NewConversationPanel.tsx'
 import { LOCAL_HOST } from './target.ts'
@@ -15,24 +15,31 @@ const copy = (zh: boolean) => zh ? {
   files: '文件与文件夹', sessions: '会话', drill: '进入文件夹', loading: '正在搜索文件…',
   chooseWorkspace: '选择工作区后即可搜索文件。', fileError: '无法搜索所选工作区的文件。', empty: '没有匹配的引用。',
   offline: '主机离线，恢复连接后可搜索文件。',
-  remoteSessions: '创建会话后可引用远端会话。', otherCommands: '打开会话后可使用其他命令。',
+  remoteSessions: '发送首条消息后，可在远程会话中引用已共享的会话。',
+  add: '添加', openFiles: '添加图片', fileDescription: '选择 PNG、JPG、WebP 或 GIF',
+  noCommands: '没有匹配的指令。', noSessions: '没有匹配的本机会话。',
+  conversationOnly: '打开会话后可用', skillsUnavailable: '打开会话后可查看当前 Agent preset 的技能。',
 } : {
   model: 'Model', modelDescription: 'Choose a model for the new session', commands: 'Commands', suggestions: 'Completion suggestions',
   files: 'Files & folders', sessions: 'Sessions', drill: 'Open folder', loading: 'Searching files…',
   chooseWorkspace: 'Choose a workspace to search its files.', fileError: 'Could not search files in this workspace.', empty: 'No matching references.',
   offline: 'The host is offline. File search will resume when it reconnects.',
-  remoteSessions: 'Remote session references are available after creating a session.', otherCommands: 'Other commands are available after opening a session.',
+  remoteSessions: 'After sending the first message, you can cite shared sessions in the remote conversation.',
+  add: 'Add', openFiles: 'Attach images', fileDescription: 'Choose PNG, JPG, WebP, or GIF',
+  noCommands: 'No matching commands.', noSessions: 'No matching local sessions.',
+  conversationOnly: 'Available in an open session', skillsUnavailable: 'Open a session to see skills for its Agent preset.',
 }
 
 type CompletionCopy = ReturnType<typeof copy>
 
 type Row = {
   readonly id: string
-  readonly section: 'commands' | 'files' | 'sessions'
+  readonly section: 'add' | 'commands' | 'files' | 'sessions'
   readonly label: string
   readonly description?: string
 } & (
   | { readonly kind: 'model' }
+  | { readonly kind: 'attach' }
   | { readonly kind: 'file' | 'folder' | 'session'; readonly mention: string; readonly drill?: string }
 )
 
@@ -82,7 +89,7 @@ function sessionAge(at: number | undefined, zh: boolean): string | undefined {
 }
 
 export function useDraftCompletion(
-  view: NewConversationView, actions: NewConversationPanelActions, editor: RefObject<HTMLTextAreaElement>, disabled: boolean, legacy: boolean,
+  view: NewConversationView, actions: NewConversationPanelActions, editor: RefObject<HTMLTextAreaElement>, disabled: boolean, legacy: boolean, pickImages?: () => void,
 ) {
   const { target, text } = view
   const { generation, catalogGeneration } = target
@@ -137,14 +144,21 @@ export function useDraftCompletion(
     setDismissed(restore.keepOpen ? null : restore)
   }, [restore, text, generation, catalogGeneration, disabled, editor])
 
-  const matchesModel = (value: string) => rankByName([{ name: 'model', label: words.model }], value).length > 0
+  const slashActions = [
+    ...(pickImages === undefined ? [] : [{ name: 'file', label: words.openFiles, description: words.fileDescription, kind: 'attach', section: 'add' } as const]),
+    { name: 'model', label: words.model, description: words.modelDescription, kind: 'model', section: 'commands' },
+  ] as const
+  const slashRows = (value: string) => rankByName(slashActions, value)
+  const sessionCommands = token?.trigger === '/' ? rankByName(SESSION_ONLY_COMMANDS.map(command => ({
+    name: command.name, label: 'alias' in command ? command.alias : command.name,
+  })), query) : []
   const rows: Row[] = []
   const statuses: string[] = []
   if (token?.trigger === '/') {
-    if (matchesModel(query)) {
-      rows.push({ id: 'model', section: 'commands', kind: 'model', label: words.model, description: words.modelDescription })
-    }
-    statuses.push(words.otherCommands)
+    rows.push(...slashRows(query).map(row => ({ ...row, id: row.name })))
+    if (sessionCommands.length > 0) statuses.push(`${words.conversationOnly} · ${sessionCommands.map(row => `/${zh && query !== '' && row.label.includes(query) ? row.label : row.name}`).join(' · ')}`)
+    if (query === '') statuses.push(words.skillsUnavailable)
+    else if (rows.length === 0 && sessionCommands.length === 0) statuses.push(words.noCommands)
   } else if (token?.trigger === '@') {
     if (target.workspaceId === undefined) statuses.push(words.chooseWorkspace)
     else if (!online) statuses.push(words.offline)
@@ -153,19 +167,23 @@ export function useDraftCompletion(
     else rows.push(...fileRows(currentFiles, token))
 
     if (!token.quoted && !/[\\/]/u.test(query)) {
-      if (target.hostId === LOCAL_HOST && currentFiles !== undefined) {
+      if (target.hostId === LOCAL_HOST && (fileRequest === null || currentFiles !== undefined)) {
         // Files rank before Sessions; wait for that section before exposing a
         // default selection so a late response cannot change what Enter picks.
-        for (const session of matchDraftCompletionSessions(view.completionSessions, query)) {
+        const matchingSessions = matchDraftCompletionSessions(view.completionSessions, query)
+        if (target.workspaceId === undefined && matchingSessions.length === 0) statuses.push(words.noSessions)
+        for (const session of matchingSessions) {
           const age = sessionAge(session.updatedAt, zh)
+          const description = target.workspaceId === undefined && session.cwd !== undefined
+            ? [session.cwd, age].filter(Boolean).join(' · ') : age
           rows.push({ id: `session:${session.id}`, section: 'sessions', kind: 'session', label: session.label,
-            ...(age === undefined ? {} : { description: age }), mention: formatDraftSessionMention(session) })
+            ...(description === undefined ? {} : { description }), mention: formatDraftSessionMention(session) })
         }
       } else if (target.hostId !== LOCAL_HOST) {
         statuses.push(words.remoteSessions)
       }
     }
-    if (rows.length === 0 && Array.isArray(currentFiles)) statuses.unshift(words.empty)
+    if (rows.length === 0 && statuses.length === 0) statuses.push(words.empty)
   }
 
   const activeRow = (highlight?.request === active ? rows.find(row => row.id === highlight.id) : undefined) ?? rows[0]
@@ -183,12 +201,14 @@ export function useDraftCompletion(
     if (active === null || token === null || el === null || composing.current || el.ownerDocument.activeElement !== el
       || el.value !== active.text || el.selectionStart !== active.caret || el.selectionEnd !== active.caret) return false
     const descent = drill && row.kind === 'folder' ? row.drill : undefined
-    const value = row.kind === 'model' ? '' : descent ?? row.mention
-    const next = replaceDraftCompletion(active.text, token, value, row.kind !== 'model' && descent === undefined)
+    const action = row.kind === 'attach' || row.kind === 'model'
+    const value = action ? '' : descent ?? row.mention
+    const next = replaceDraftCompletion(active.text, token, value, !action && descent === undefined)
     if (!actions.onTextChange(next.text, active.generation, active.text)) return false
     setDismissed(active)
     setRestore({ ...next, generation, catalogGeneration, keepOpen: descent !== undefined })
     if (row.kind === 'model') actions.onOpenModelPicker()
+    if (row.kind === 'attach') pickImages?.()
     return true
   }
   const select = (row: Row): void => {
@@ -218,7 +238,7 @@ export function useDraftCompletion(
       if (activeRow !== undefined) return true
       if (el.selectionStart !== el.selectionEnd || sameEditor(dismissed, live)) return false
       const liveToken = detectDraftCompletion(live.text, live.caret)
-      return liveToken?.trigger === '@' || (liveToken?.trigger === '/' && matchesModel(liveToken.query))
+      return liveToken?.trigger === '@' || (liveToken?.trigger === '/' && slashRows(liveToken.query).length > 0)
     }
     if (active === null || token === null) return false
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
@@ -301,9 +321,9 @@ function DraftCompletionMenu({ id, rows, activeIndex, statuses, words, anchorSig
                   onMouseDown={event => { event.preventDefault() }}
                   onMouseMove={index === activeIndex ? undefined : () => { onHighlight(row) }}
                   onClick={() => { onPick(row, false) }}>
-                  {row.kind === 'model' ? <IconDataOutlineRegular size={14} /> : <ReferenceIconRegular kind={row.kind} size={14} />}
+                  {row.kind === 'model' ? <IconDataOutlineRegular size={14} /> : row.kind === 'attach' ? <IconPaperclipOutlineRegular size={14} /> : <ReferenceIconRegular kind={row.kind} size={14} />}
                   <span className="zr-newc-completionLabel" title={row.label}>{row.label}</span>
-                  {row.kind === 'model' && <span className="zr-newc-completionAlias">/model</span>}
+                  {(row.kind === 'model' || row.kind === 'attach') && <span className="zr-newc-completionAlias">{row.kind === 'model' ? '/model' : '/file'}</span>}
                   {row.description !== undefined && <span className="zr-newc-completionDetail" title={row.description}>{row.description}</span>}
                 </button>
                 {row.kind === 'folder' && row.drill !== undefined && <button type="button" tabIndex={-1}

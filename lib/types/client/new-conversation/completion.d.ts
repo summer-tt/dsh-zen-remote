@@ -18,6 +18,19 @@ export interface DraftCompletionToken {
         readonly end: number;
     };
 }
+/** These native actions require an open Session and never run in a draft. */
+export declare const SESSION_ONLY_COMMANDS: readonly [{
+    readonly name: "compact";
+    readonly alias: "压缩";
+}, {
+    readonly name: "export";
+    readonly alias: "导出";
+}, {
+    readonly name: "rewind";
+}, {
+    readonly name: "undo";
+}];
+export declare function bareSessionOnlyCommand(text: string): string | undefined;
 /** Use the native @ grammar first, then the native slash word and URL boundaries. */
 export declare function detectDraftCompletion(text: string, caret: number): DraftCompletionToken | null;
 /** Quote paths with spaces. A directory drill leaves any opening quote live. */
@@ -29,6 +42,6 @@ export declare function replaceDraftCompletion(text: string, token: DraftComplet
     text: string;
     caret: number;
 };
-/** All draft Session rows already share the selected workspace; keep the store's recency order. */
+/** Keep the eligible Session rows in the store's recency order. */
 export declare function matchDraftCompletionSessions(sessions: readonly DraftCompletionSession[], query: string): readonly DraftCompletionSession[];
 //# sourceMappingURL=completion.d.ts.map

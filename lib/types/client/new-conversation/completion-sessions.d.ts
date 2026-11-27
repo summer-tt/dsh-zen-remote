@@ -7,7 +7,7 @@ interface SessionRow {
     readonly origin?: string | undefined;
     readonly updatedAt: number;
 }
-/** Local drafts can cite sessions already visible in the selected workspace. */
+/** Local drafts cite visible sessions. A selected workspace narrows the menu. */
 export declare function draftCompletionSessions(target: {
     hostId: string;
     workspaceId: string | undefined;
