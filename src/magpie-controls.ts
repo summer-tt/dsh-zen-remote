@@ -108,7 +108,12 @@ export function createRemoteModelControlsRoute(options: { admit(req: IncomingMes
       if (session === undefined || provider?.serverId !== session.serverId) { fail(400, 'remote-mismatch'); return }
       const request = parseMagpieControlsRequest({ method: req.method, input: { ...input, sessionId: session.id, provider: provider.id } })
       if (request === undefined) { fail(400, 'bad-request'); return }
-      const relay = requireSessionHostRelay(options.getPool(), session.serverId)
+      const pool = options.getPool()
+      if (pool?.getByServerId(session.serverId)?.identityPending === true) {
+        fail(503, 'remote-connecting')
+        return
+      }
+      const relay = requireSessionHostRelay(pool, session.serverId)
       const credentials = relay.lastHandshakeDigest
       let interrupted = false
       const unsubscribe = relay.subscribe(state => { if (state !== 'online') interrupted = true })
@@ -120,8 +125,9 @@ export function createRemoteModelControlsRoute(options: { admit(req: IncomingMes
         unsubscribe()
       }
       if (controller.signal.aborted) return
-      const current = options.getPool()?.getByServerId(session.serverId)?.client
-      if (interrupted || current !== relay || current.state !== 'online' || current.lastHandshakeDigest !== credentials) {
+      const current = options.getPool()?.getByServerId(session.serverId)
+      if (interrupted || current?.identityPending === true || current?.client !== relay ||
+        relay.state !== 'online' || relay.lastHandshakeDigest !== credentials) {
         fail(503, 'remote-binding-changed')
         return
       }

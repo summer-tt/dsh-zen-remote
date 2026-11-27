@@ -2495,6 +2495,11 @@ test('remote model controls route keeps capabilities and writes on the selected 
   assert.equal(missing.status, 404)
   assert.equal(JSON.parse(missing.body).error.code, 'remote-unsupported')
 
+  b.identityPending = true
+  assert.equal(JSON.parse((await read()).body).error.code, 'remote-connecting')
+  assert.equal(calls.length, 4)
+  delete b.identityPending
+
   let replaceReply
   const pending = new Promise(resolve => { replaceReply = resolve })
   let started
