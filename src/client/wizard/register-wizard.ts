@@ -21,6 +21,7 @@ import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import { DEVICE_TOKEN_FIELD, ZenRemoteSettingsForm } from '../../client-data/settings-form.ts'
 import { NS } from '../locales.ts'
+import type { HostAppearanceStore } from '../../client-data/session-host-appearance.ts'
 import { SETTINGS_ENTRY_ID } from '../settings/register-settings.ts'
 import { WIZARD_CSS } from './wizard-css.ts'
 import type { GatewayWizard } from './GatewayWizard.tsx'
@@ -56,7 +57,7 @@ export interface SaveRowFieldsOptions {
  * @param section - the block component; a parameter so this module stays
  *   JSX-free and importable under Node's type stripping.
  */
-export function registerGatewayWizard(ctx: ClientContext, section: typeof GatewayWizard): void {
+export function registerGatewayWizard(ctx: ClientContext, section: typeof GatewayWizard, appearance: HostAppearanceStore): void {
   ctx.effect(() => {
     const tag = document.createElement('style')
     tag.dataset.plugin = 'dsh-zen-remote-wizard'
@@ -93,7 +94,7 @@ export function registerGatewayWizard(ctx: ClientContext, section: typeof Gatewa
       name: 'plugins.bundle.config',
       key: WIZARD_BUNDLE_KEY,
       locale: NS,
-      inject: () => ({ config, saveRowFields }),
+      inject: () => ({ config, saveRowFields, appearance }),
     }, section)), 'dsh-zen-remote: wizard section')
   })
 }

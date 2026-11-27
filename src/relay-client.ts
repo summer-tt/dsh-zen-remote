@@ -1676,7 +1676,10 @@ export function createRelayClient(options: CreateRelayClientOptions): RelayClien
       // plaintext values (T23a-fix).
       lastHandshakeDigest = relayCredentialsDigest(creds.url, creds.token)
       snapshotUnsupported = false
-      setState('online')
+      // A concurrent successful request may have already set the link online.
+      // Listeners still need the confirmed identity from this handshake.
+      if (state === 'online') notify()
+      else setState('online')
       return handshakeInfo
     })()
     connectInFlight = attempt

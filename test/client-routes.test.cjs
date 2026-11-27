@@ -1820,7 +1820,9 @@ test('MS-5 claim pool mode: the pairing lands in the pool, the response carries 
     })
     assert.equal(res.status, 200)
     const body = JSON.parse(res.body)
-    assert.deepEqual(body, { ok: true, entryId: 'fresh-1', deviceId: 'dev1', deviceName: '台式机', serverUrl: gwUrl }, 'entryId + the normalized address, never the token')
+    const { appearanceProfile, ...pairing } = body
+    assert.deepEqual(pairing, { ok: true, entryId: 'fresh-1', deviceId: 'dev1', deviceName: '台式机', serverUrl: gwUrl }, 'entryId + the normalized address, never the token')
+    if (process.env.DSH_PROFILE_DIR ?? process.env.DSH_PROFILE) assert.match(appearanceProfile, /^[0-9a-f]{64}$/u)
     assert.equal(body.token, undefined)
     assert.equal(pool.calls.pair.length, 1)
     assert.deepEqual(pool.calls.pair[0], { serverUrl: gwUrl, token: 'tok-gateway', deviceId: 'dev1', deviceName: '台式机' }, 'the gateway token went straight into the pool')

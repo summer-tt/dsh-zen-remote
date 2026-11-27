@@ -28,7 +28,7 @@
  */
 
 import type { ConfigSource } from './config.js'
-import { createRelayClient, PEER_UPLOAD_RECOVERY_MARGIN_MS } from './relay-client.js'
+import { createRelayClient, PEER_UPLOAD_RECOVERY_MARGIN_MS, relayCredentialsDigest } from './relay-client.js'
 import type { RelayClient, RelayClock, RelayState, CreateRelayClientOptions } from './relay-client.js'
 import type { PairedServerRecord } from './state-store.js'
 import {
@@ -86,6 +86,10 @@ export interface RelayPoolEntryView {
   serverUrl: string
   /** The handshake's server id; the persisted record id until one lands. */
   serverId: string | undefined
+  /** Device identity of the current pairing after its first confirmed handshake. */
+  confirmedPairingId?: string
+  pairingDeviceId?: string
+  identityPending?: true
   /** The handshake's server name; the persisted name until one lands. */
   serverName: string | undefined
   /** {@link deriveDisplayServerNames} over the current entries. */
@@ -237,6 +241,10 @@ export function createRelayPool(options: RelayPoolOptions): RelayPool {
     // network, not the peer machine's independent relay identity.
     serverId: entry.virtual ? (entry.record.serverId ?? entry.record.id) : effectiveServerId(entry),
     serverName: entry.virtual ? entry.record.serverName : effectiveServerName(entry),
+    ...(!entry.virtual && entry.record.deviceId ? { pairingDeviceId: entry.record.deviceId } : {}),
+    ...(entry.record.identityPending === true ? { identityPending: true as const } : {}),
+    ...(!entry.virtual && entry.record.deviceId && entry.record.serverId && entry.record.identityPending !== true
+      ? { confirmedPairingId: entry.record.deviceId } : {}),
     displayName,
     client: entry.client,
     createdAt: entry.record.createdAt,
@@ -289,6 +297,9 @@ export function createRelayPool(options: RelayPoolOptions): RelayPool {
       }
       return
     }
+    if (!/^[0-9a-f]{8}$/u.test(info.serverId) ||
+      entry.client.lastHandshakeDigest !== relayCredentialsDigest(entry.record.serverUrl, entry.record.token)) return
+    delete entry.record.identityPending
     const result = recordServerHandshake(stateFile, entry.record.id, {
       serverId: info.serverId,
       serverName: info.serverName,

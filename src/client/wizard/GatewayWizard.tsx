@@ -100,6 +100,9 @@ import {
   type WizardVerifyStart,
 } from '../../client-data/wizard.ts'
 import { NS } from '../locales.ts'
+import { HostAppearanceEditor, HostAppearanceFields, LocalHostAppearance } from './HostAppearanceFields.tsx'
+import { isSessionHostId, resolveHostStyle, type HostAppearanceStore, type HostStyle } from '../../client-data/session-host-appearance.ts'
+import { confirmedAppearanceHost, hostStyleOps, readPendingHostAppearance, storePendingHostAppearance, storeHostAppearanceNotice, takeHostAppearanceNotice } from '../../client-data/paired-host-appearance.ts'
 import { copyTextToClipboard } from '../clipboard.ts'
 import { MigrateCard } from './cards/MigrateCard.tsx'
 import { PortForwardCard } from './cards/PortForwardCard.tsx'
@@ -109,6 +112,7 @@ import { TokenCard } from './cards/TokenCard.tsx'
 export interface GatewayWizardProps extends PropsRuntime<'plugins.bundle.config'>, PropsLocale<typeof NS> {
   /** The row's staged-form controller — saved-role source of truth. */
   config: ZenRemoteSettingsForm
+  appearance: HostAppearanceStore
   /** One atomic row write (the wiring stages through configForms.mutate). */
   saveRowFields: (fields: Record<string, unknown>, options?: { unset?: readonly string[] }) => Promise<void>
 }
@@ -423,16 +427,23 @@ export function GatewayWizard(props: GatewayWizardProps): ReactNode {
   const [clientDeviceName, setClientDeviceName] = useState('')
   const [clientServerUrl, setClientServerUrl] = useState('')
   const [clientPairCode, setClientPairCode] = useState('')
+  const [pairAppearance, setPairAppearance] = useState<HostStyle>({})
+  const [pendingAppearance, setPendingAppearance] = useState(readPendingHostAppearance)
+  const [appearanceSave, setAppearanceSave] = useState<'waiting' | 'saving' | 'failed' | 'saved'>('waiting')
+  const [appearanceUnsupported, setAppearanceUnsupported] = useState(() => takeHostAppearanceNotice())
+  const appearanceWrite = useRef(false)
+  const [appearanceModalOpen, setAppearanceModalOpen] = useState(false)
   const [clientClaimBusy, setClientClaimBusy] = useState(false)
   const [clientClaimFail, setClientClaimFail] = useState<{ code: string; retryAfterMs?: number } | null>(null)
   const [clientView, setClientView] = useState<ClientConnectionView | undefined>()
   const [clientLoading, setClientLoading] = useState(false)
+  const clientLoad = useRef(0)
   const [clientUnpairBusy, setClientUnpairBusy] = useState(false)
   // MS-8: the paired-server pool's management surfaces — the 已配对服务端
   // 管理弹窗, the entry the wizard's step 3 is staring at, and the per-entry
   // action busy/failed markers both the modal and step 3 share.
   const [serversModalOpen, setServersModalOpen] = useState(false)
-  const [activeClientEntryId, setActiveClientEntryId] = useState<string | undefined>()
+  const [activeClientEntryId, setActiveClientEntryId] = useState<string | undefined>(() => pendingAppearance?.entryId)
   const [serverBusyEntry, setServerBusyEntry] = useState<string | null>(null)
   const [serverActionFailed, setServerActionFailed] = useState(false)
 
@@ -441,6 +452,8 @@ export function GatewayWizard(props: GatewayWizardProps): ReactNode {
     useCallback((cb: () => void) => config.subscribe(cb), [config]),
     () => config.getSnapshot(),
   )
+  const appearance = props.appearance
+  const hostConfig = useSyncExternalStore(appearance.subscribe, appearance.getSnapshot)
   const savedClient = config.savedRoleIsClient()
   const savedPeer = config.savedRoleIsPeer()
   const effectiveClient = savedClient || (probedRole === 'client' && !config.rowRoleKnown())
@@ -492,19 +505,42 @@ export function GatewayWizard(props: GatewayWizardProps): ReactNode {
   }, [roleSnapshot, probedRole, effectiveClient, effectivePeer, config])
 
   const loadClientStatus = useCallback(async (): Promise<void> => {
+    const request = ++clientLoad.current
     setClientLoading(true)
     try {
       const response = await fetch(CLIENT_STATUS_ROUTE)
       if (response.ok) {
         const body = (await response.json()) as ClientStatusBody
-        setClientView(deriveClientStatusView(body))
+        if (request === clientLoad.current) setClientView(deriveClientStatusView(body))
       }
     } catch {
       // keep last client view
     } finally {
-      setClientLoading(false)
+      if (request === clientLoad.current) setClientLoading(false)
     }
   }, [])
+
+  const pendingServer = clientView?.servers.find(row => row.entryId === pendingAppearance?.entryId)
+  const pairingMissing = pendingAppearance !== undefined && clientView !== undefined && (
+    pendingAppearance.profile !== clientView.appearanceProfile || pendingServer === undefined || pendingServer.pairingDeviceId !== pendingAppearance.pairingId
+  )
+  const confirmedHost = pendingAppearance === undefined ? undefined : confirmedAppearanceHost(pendingAppearance, clientView?.servers ?? [], clientView?.appearanceProfile)
+  const canSaveAppearance = roleSnapshot.scopeStatus === 'ready' && roleSnapshot.writable && !roleSnapshot.saving && !clientClaimBusy
+  useEffect(() => {
+    if (pendingAppearance === undefined || confirmedHost === undefined || !canSaveAppearance || appearanceSave !== 'waiting' || appearanceWrite.current) return
+    appearanceWrite.current = true
+    setAppearanceSave('saving')
+    void config.writeHostAppearanceFields(hostStyleOps(confirmedHost, pendingAppearance.style)).then(saved => {
+      appearanceWrite.current = false
+      if (saved) {
+        storePendingHostAppearance(undefined)
+        setPendingAppearance(undefined)
+        setAppearanceSave('saved')
+      } else {
+        setAppearanceSave('failed')
+      }
+    })
+  }, [pendingAppearance, confirmedHost, canSaveAppearance, appearanceSave, config])
 
   // PG-9: the peer node's status poll — same shape as the client's, against
   // the peer status route. A non-peer row answers 503; the view then stays
@@ -865,7 +901,7 @@ export function GatewayWizard(props: GatewayWizardProps): ReactNode {
 
   // Close the wizard modal, either devices modal or the servers modal on Escape when no sub-card is open and not mid-save.
   useEffect(() => {
-    if ((!modalOpen && !devicesModalOpen && !serversModalOpen && !peerDevicesModalOpen) || card !== undefined) return
+    if ((!modalOpen && !devicesModalOpen && !serversModalOpen && !peerDevicesModalOpen && !appearanceModalOpen) || card !== undefined) return
     const onKey = (event: KeyboardEvent): void => {
       if (event.key === 'Escape' && !savingConfig && !clientClaimBusy && !deviceBusy && peerBusyNode === null) {
         if (renamingDevice !== null) {
@@ -874,6 +910,10 @@ export function GatewayWizard(props: GatewayWizardProps): ReactNode {
         }
         if (devicesModalOpen) {
           setDevicesModalOpen(false)
+          return
+        }
+        if (appearanceModalOpen) {
+          setAppearanceModalOpen(false)
           return
         }
         if (serversModalOpen) {
@@ -889,7 +929,7 @@ export function GatewayWizard(props: GatewayWizardProps): ReactNode {
     }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
-  }, [modalOpen, devicesModalOpen, serversModalOpen, peerDevicesModalOpen, card, savingConfig, clientClaimBusy, deviceBusy, peerBusyNode, renamingDevice])
+  }, [modalOpen, devicesModalOpen, serversModalOpen, peerDevicesModalOpen, appearanceModalOpen, card, savingConfig, clientClaimBusy, deviceBusy, peerBusyNode, renamingDevice])
 
   // Seed the entry step AND the configure forms from the FIRST ready
   // wizard status on a host deployment — and on a PEER deployment too
@@ -1261,6 +1301,7 @@ export function GatewayWizard(props: GatewayWizardProps): ReactNode {
   const runClientClaim = async (): Promise<void> => {
     setFormError(null)
     setClientClaimFail(null)
+    setAppearanceUnsupported(false)
     // UX-1: the facts that decide the post-pairing reload — whether the page
     // opened as an already-effective client, and whether the backend's
     // stream interceptor was already active (from the last client/status
@@ -1313,19 +1354,38 @@ export function GatewayWizard(props: GatewayWizardProps): ReactNode {
         }),
       })
       const body = (await response.json()) as ClaimRouteBody
-      if (body?.ok === true) {
+      if (response.ok && body?.ok === true) {
+        let unsupportedAppearance = false
         if (typeof body.entryId === 'string' && body.entryId !== '') {
           // Pool mode: the pairing landed straight in the pool store (the
           // token never rides the answer) — remember WHICH entry the wizard
           // just touched so step 3 opens on it.
           setActiveClientEntryId(body.entryId)
+          if (pendingAppearance === undefined && Object.keys(pairAppearance).length > 0) {
+            if (typeof body.deviceId === 'string' && body.deviceId !== '') {
+              const pending = {
+                entryId: body.entryId,
+                pairingId: body.deviceId,
+                serverUrl: typeof body.serverUrl === 'string' ? body.serverUrl : trimmedUrl,
+                ...(typeof body.appearanceProfile === 'string' ? { profile: body.appearanceProfile } : {}),
+                style: pairAppearance,
+              }
+              storePendingHostAppearance(pending)
+              setPendingAppearance(pending)
+              setAppearanceSave('waiting')
+            } else {
+              unsupportedAppearance = true
+            }
+          }
         } else if (typeof body.token === 'string' && body.token !== '') {
           // Legacy single-server route: the token rides the answer and the
           // row is the store.
           const urlToWrite = typeof body.serverUrl === 'string' && body.serverUrl !== '' ? body.serverUrl : trimmedUrl
           const echoed = typeof body.deviceName === 'string' && body.deviceName.trim() !== '' ? body.deviceName.trim() : deviceName
           await config.writeClientPairing(urlToWrite, body.token, echoed)
+          unsupportedAppearance = Object.keys(pairAppearance).length > 0
         }
+        setAppearanceUnsupported(unsupportedAppearance)
         if (shouldReloadAfterClientActivation({
           wasEffectiveClient,
           nowClientRole: true,
@@ -1336,11 +1396,13 @@ export function GatewayWizard(props: GatewayWizardProps): ReactNode {
           // resident global streams were opened unwrapped — wait out the
           // backend's row-reload window, then reload so the streams reopen
           // wrapped and the server's shared sessions enter the sidebar.
+          if (unsupportedAppearance) storeHostAppearanceNotice()
           await awaitClientStatusReady()
           window.location.reload()
           return
         }
         setClientPairCode('')
+        setPairAppearance({})
         await loadClientStatus()
         setStep('verify')
       } else {
@@ -1645,6 +1707,8 @@ export function GatewayWizard(props: GatewayWizardProps): ReactNode {
 
   const openWizardAt = (targetStep: WizardStep, options?: { role?: WizardRole; target?: 'web' | 'desktop-client'; keepPeerRole?: boolean }): void => {
     setFormError(null)
+    setPairAppearance({})
+    setAppearanceUnsupported(false)
     if (options?.role !== undefined) setWizardRole(options.role)
     if (options?.target !== undefined) setPairTarget(options.target)
     if (options?.keepPeerRole !== undefined) setKeepPeerRole(options.keepPeerRole)
@@ -1661,6 +1725,27 @@ export function GatewayWizard(props: GatewayWizardProps): ReactNode {
     openWizardAt('configure', { role: 'client' })
   }
 
+  const pairAppearanceHost = serverRows.find(server => server.identityPending !== true && server.serverId !== 'local' && isSessionHostId(server.serverId) && server.serverUrl.replace(/\/$/u, '') === clientServerUrl.trim().replace(/\/$/u, ''))?.serverId
+  const pairAppearancePreview = pairAppearanceHost === undefined
+    ? { color: 'gray' as const, icon: 'server' as const }
+    : resolveHostStyle(hostConfig, pairAppearanceHost)
+  const pendingAppearanceNotice = pendingAppearance === undefined
+    ? appearanceSave === 'saved' ? <p className="zr-wizard-notice" role="status" data-tone="ok">{t('hostAppearance.saved')}</p> : null
+    : (
+    <div className="zr-wizard-notice" role="status" data-tone={appearanceSave === 'failed' ? 'error' : undefined}>
+      <p className="zr-wizard-hint">{pendingServer?.displayName || pendingAppearance.serverUrl}</p>
+      <p className="zr-wizard-hint">{t(pairingMissing ? 'hostAppearance.pairingMissing' : appearanceSave === 'failed' ? 'hostAppearance.failed' : appearanceSave === 'saving' ? 'hostAppearance.saving' : 'hostAppearance.awaitHandshake')}</p>
+      <div className="zr-wizard-deviceActions">
+        {appearanceSave === 'failed' && !pairingMissing && <button type="button" className="zr-wizard-linkBtn" disabled={!canSaveAppearance} onClick={() => setAppearanceSave('waiting')}>{t('hostAppearance.retry')}</button>}
+        <button type="button" className="zr-wizard-linkBtn" disabled={appearanceSave === 'saving'} onClick={() => {
+          storePendingHostAppearance(undefined)
+          setPendingAppearance(undefined)
+          setAppearanceSave('waiting')
+        }}>{t('hostAppearance.discardPending')}</button>
+      </div>
+    </div>
+  )
+
   return (
     <div data-zen-remote="wizard">
       <div className="zr-wizard-header">
@@ -1676,6 +1761,15 @@ export function GatewayWizard(props: GatewayWizardProps): ReactNode {
 
       {statusLoaded && viaGateway && !effectiveClient ? <p className="zr-wizard-notice" data-tone="error">{t('wizard.remoteOnly')}</p> : null}
       {notWired ? <p className="zr-wizard-notice">{t('wizard.notWired')}</p> : null}
+
+      {effectiveClient && !configured && <div className="zr-wizard-deviceActions">
+        <button type="button" className="zr-wizard-btn" onClick={() => setServersModalOpen(true)}>{t('wizard.overview.manageServers')}</button>
+      </div>}
+      {!effectiveClient && <div className="zr-wizard-deviceActions">
+        <button type="button" className="zr-wizard-btn" disabled={disabled} onClick={() => setAppearanceModalOpen(true)}>{t('hostAppearance.title')}</button>
+      </div>}
+      {!modalOpen && !serversModalOpen && pendingAppearanceNotice}
+      {!modalOpen && appearanceUnsupported && <p className="zr-wizard-notice" role="status">{t('hostAppearance.unsupportedPairing')}</p>}
 
       {configured ? (
         effectiveClient ? (
@@ -2911,6 +3005,14 @@ export function GatewayWizard(props: GatewayWizardProps): ReactNode {
                       {formError === 'bad-client-code' ? (
                         <p className="zr-wizard-notice" data-tone="error">{t('settings.client.failBadCode')}</p>
                       ) : null}
+                      <details className="zr-wizard-hostAppearance">
+                        <summary className="zr-wizard-label">{t('hostAppearance.edit')}</summary>
+                        <HostAppearanceFields style={pairAppearance} preview={{
+                          ...pairAppearancePreview, ...pairAppearance,
+                        }} disabled={clientClaimBusy || pendingAppearance !== undefined || !canSaveAppearance} onChange={setPairAppearance} t={t} />
+                        <p className="zr-wizard-hint">{t('hostAppearance.pairHint')}</p>
+                      </details>
+                      {pendingAppearanceNotice}
                       {clientClaimFail !== null ? (
                         <p className="zr-wizard-notice" data-tone="error">{claimFailCopy(clientClaimFail.code, clientClaimFail.retryAfterMs, t)}</p>
                       ) : null}
@@ -2984,6 +3086,8 @@ export function GatewayWizard(props: GatewayWizardProps): ReactNode {
               <>
                 <div className="zr-wizard-modalBody">
                   <p className="zr-wizard-stepIntro">{t('wizard.modal.step3Desc')}</p>
+                  {wizardRole === 'client' && pendingAppearanceNotice}
+                  {wizardRole === 'client' && appearanceUnsupported && <p className="zr-wizard-notice" data-tone="error">{t('hostAppearance.unsupportedPairing')}</p>}
                   {wizardRole === 'peer' ? (
                     /* PG-9: the peer branch's three-light self-check — the
                         identity, the admission state and device discovery,
@@ -3662,6 +3766,11 @@ export function GatewayWizard(props: GatewayWizardProps): ReactNode {
                 <p className="zr-wizard-notice" data-tone="error">{t('settings.actionFail')}</p>
               ) : null}
 
+              <details className="zr-wizard-hostAppearance">
+                <summary className="zr-wizard-label">{t('hostAppearance.general')}</summary>
+                <LocalHostAppearance appearance={appearance} form={config} t={t} />
+              </details>
+              {pendingAppearanceNotice}
               {serverRows.length === 0 ? (
                 <p className="zr-wizard-notice">{t('settings.client.serversEmpty', { max: poolSummary.maxServers })}</p>
               ) : (
@@ -3737,6 +3846,9 @@ export function GatewayWizard(props: GatewayWizardProps): ReactNode {
                             {t('settings.client.serverRemove')}
                           </button>
                         </div>
+                        {server.identityPending !== true && server.serverId !== 'local' && isSessionHostId(server.serverId) ? (
+                          <HostAppearanceEditor key={server.serverId} appearance={appearance} form={config} hostId={server.serverId} disabled={serverBusyEntry !== null} t={t} />
+                        ) : <p className="zr-wizard-hint">{t('hostAppearance.awaitHandshake')}</p>}
                       </li>
                     )
                   })}
@@ -3889,6 +4001,9 @@ export function GatewayWizard(props: GatewayWizardProps): ReactNode {
                           </div>
                           <span className="zr-wizard-hint">{device.nodeId}</span>
                         </div>
+                        {device.path !== 'mismatch' && device.nodeId !== 'local' && isSessionHostId(device.nodeId) && (
+                          <HostAppearanceEditor appearance={appearance} form={config} hostId={device.nodeId} disabled={peerBusyNode !== null} t={t} />
+                        )}
 
                         {device.path === 'mismatch' ? (
                           <>
@@ -3949,6 +4064,18 @@ export function GatewayWizard(props: GatewayWizardProps): ReactNode {
           </div>
         </div>
       ) : null}
+
+      {appearanceModalOpen && (
+        <div data-zen-remote="wizard-modal" onClick={() => setAppearanceModalOpen(false)}>
+          <div className="zr-wizard-modalDialog" role="dialog" aria-modal="true" aria-label={t('hostAppearance.title')} onClick={event => event.stopPropagation()}>
+            <div className="zr-wizard-modalHeader">
+              <p className="zr-wizard-modalTitle">{t('hostAppearance.title')}</p>
+              <button type="button" className="zr-wizard-cardCloseIcon" aria-label={t('wizard.card.close')} onClick={() => setAppearanceModalOpen(false)}>×</button>
+            </div>
+            <div className="zr-wizard-modalBody"><LocalHostAppearance appearance={appearance} form={config} t={t} /></div>
+          </div>
+        </div>
+      )}
 
       {card === 'proxy' ? (
         <ProxyCard

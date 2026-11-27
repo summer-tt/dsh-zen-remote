@@ -1,5 +1,7 @@
+import { createHostAppearanceStore } from '../src/client-data/session-host-appearance.ts'
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { readFileSync } from 'node:fs'
 import {
   caddyFailureCopy,
   configureReadiness,
@@ -316,7 +318,7 @@ test('formSeedOf, upstreamPortOf, deriveWizardLights, failure copies, route cons
   registerGatewayWizard({
     effect: () => () => {},
     inject(services, cb) { if (services.includes('configForms')) formsCallback = cb },
-  }, () => null)
+  }, () => null, createHostAppearanceStore())
   assert.equal(typeof formsCallback, 'function')
   const formsEffects = []
   formsCallback({
@@ -724,4 +726,21 @@ test('T7 locales symmetry: all keys in zh and en match identically', () => {
   const zhKeys = Object.keys(zh).sort()
   const enKeys = Object.keys(en).sort()
   assert.deepEqual(enKeys, zhKeys)
+})
+
+
+test('appearance settings use the wizard forms in server management and pairing', () => {
+  const source = path => readFileSync(new URL(path, import.meta.url), 'utf8')
+  const wizard = source('../src/client/wizard/GatewayWizard.tsx')
+  const fields = source('../src/client/wizard/HostAppearanceFields.tsx')
+  const styles = source('../src/client/wizard/wizard-css.ts')
+  const settings = source('../src/client/settings/SettingsSection.tsx')
+  assert.doesNotMatch(settings, /HostAppearanceSettings/)
+  assert.match(wizard, /<HostAppearanceFields style=\{pairAppearance\}/u)
+  assert.match(wizard, /<HostAppearanceEditor key=\{server.serverId\}/u)
+  assert.match(wizard, /<HostAppearanceEditor appearance=\{appearance\} form=\{config\} hostId=\{device.nodeId\}/u)
+  assert.match(wizard, /effectiveClient && !configured[\s\S]*?setServersModalOpen\(true\)/u)
+  assert.match(fields, /className="zr-wizard-select"/u)
+  assert.match(fields, /className="zr-wizard-label"/u)
+  assert.match(styles, /\.zr-wizard-select \{[^}]*font: inherit;/u)
 })

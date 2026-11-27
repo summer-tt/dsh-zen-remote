@@ -862,6 +862,19 @@ export const WIZARD_CSS = `
   gap: 8px;
   flex-wrap: wrap;
 }
+[data-zen-remote="wizard"] .zr-wizard-hostAppearance {
+  min-width: 0;
+}
+[data-zen-remote="wizard"] .zr-wizard-hostAppearance > summary {
+  cursor: pointer;
+}
+[data-zen-remote="wizard"] .zr-wizard-hostAppearance[open] > :not(summary) {
+  margin-top: 8px;
+}
+[data-zen-remote="wizard"] .zr-wizard-hostAppearance .zr-wizard-select {
+  min-width: 0;
+  max-width: 100%;
+}
 [data-zen-remote="wizard"] .zr-wizard-select {
   height: 30px;
   font: inherit;

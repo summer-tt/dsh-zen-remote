@@ -58,6 +58,8 @@ export interface PairedServerRecord {
     /** The server's 8-hex id as of the last completed handshake; unset until
      * the first one succeeds. */
     serverId?: string;
+    /** Existing serverId belongs to an earlier pairing until the new credentials handshake. */
+    identityPending?: true;
     /** The server's display name as of the last completed handshake. */
     serverName?: string;
     /** This device's id on that server, as the pairing registered it. */

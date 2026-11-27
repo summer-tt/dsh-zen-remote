@@ -158,6 +158,7 @@ export const DEVICE_TOKEN_FIELD = 'deviceToken'
  * servers answer neither.
  */
 export interface ClientStatusBody {
+  appearanceProfile?: unknown
   /** The probe vocabulary (`connected` / `unreachable` / `revoked` /
    * `unexpected`), the row's two own answers (`unpaired` / `invalid-url`),
    * the relay verdicts (`revoked` / `incompatible`) — and, since the
@@ -242,6 +243,9 @@ export interface ClientCompatView {
 export interface ClientServerView {
   entryId: string
   serverId: string
+  confirmedPairingId?: string
+  pairingDeviceId?: string
+  identityPending?: true
   serverUrl: string
   serverName: string
   /** The pool's deduplicated display name (`-1` / `-2` suffixes included). */
@@ -279,6 +283,7 @@ export interface ClientConnectionView {
    * through tolerantly (undefined when the body carried none — an older
    * plugin — and the diagnostics row stays hidden). */
   uploadProbe: Readonly<Record<string, unknown>> | undefined
+  appearanceProfile?: string
   /** MS-6: every paired server of the pool, in pairing order. Empty on a
    * legacy body (or a row-less unpaired answer) — the pre-MS-6 page shape. */
   servers: readonly ClientServerView[]
@@ -326,6 +331,9 @@ function deriveClientServerView(value: unknown): ClientServerView | undefined {
   return {
     entryId,
     serverId: asStringSet(record.serverId),
+    ...(typeof record.confirmedPairingId === 'string' ? { confirmedPairingId: record.confirmedPairingId } : {}),
+    ...(typeof record.pairingDeviceId === 'string' ? { pairingDeviceId: record.pairingDeviceId } : {}),
+    ...(record.identityPending === true ? { identityPending: true } : {}),
     serverUrl: asStringSet(record.serverUrl),
     serverName: asStringSet(record.serverName),
     displayName: asStringSet(record.displayName),
@@ -445,6 +453,7 @@ export function deriveClientStatusView(body: ClientStatusBody): ClientConnection
     uploadProbe: safe.serviceProbe !== null && typeof safe.serviceProbe === 'object'
       ? Object.freeze({ ...(safe.serviceProbe as Record<string, unknown>) })
       : undefined,
+    ...(typeof safe.appearanceProfile === 'string' ? { appearanceProfile: safe.appearanceProfile } : {}),
     servers,
     maxServers,
     limitReached: servers.length >= maxServers,
@@ -818,6 +827,7 @@ export interface ClaimRouteBody {
    * `entryId` — the token never reaches the browser in pool mode). The
    * wizard records it as the step-3 selected server. */
   entryId?: unknown
+  appearanceProfile?: unknown
   /** The normalized address the backend validated — what the form writes. */
   serverUrl?: unknown
   code?: string
@@ -1728,7 +1738,11 @@ export class ZenRemoteSettingsForm {
 
   /** Persist a host appearance change alongside the row's other instant edits. */
   async writeHostAppearance(op: SettingsFormOp): Promise<boolean> {
-    return this.directWrite([{ ...op, path: [HOST_APPEARANCE_FIELD, ...op.path] }])
+    return this.writeHostAppearanceFields([op])
+  }
+
+  async writeHostAppearanceFields(ops: readonly SettingsFormOp[]): Promise<boolean> {
+    return this.directWrite(ops.map(op => ({ ...op, path: [HOST_APPEARANCE_FIELD, ...op.path] })))
   }
 
   /**

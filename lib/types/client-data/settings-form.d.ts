@@ -138,6 +138,7 @@ export declare const DEVICE_TOKEN_FIELD = "deviceToken";
  * servers answer neither.
  */
 export interface ClientStatusBody {
+    appearanceProfile?: unknown;
     /** The probe vocabulary (`connected` / `unreachable` / `revoked` /
      * `unexpected`), the row's two own answers (`unpaired` / `invalid-url`),
      * the relay verdicts (`revoked` / `incompatible`) — and, since the
@@ -218,6 +219,9 @@ export interface ClientCompatView {
 export interface ClientServerView {
     entryId: string;
     serverId: string;
+    confirmedPairingId?: string;
+    pairingDeviceId?: string;
+    identityPending?: true;
     serverUrl: string;
     serverName: string;
     /** The pool's deduplicated display name (`-1` / `-2` suffixes included). */
@@ -257,6 +261,7 @@ export interface ClientConnectionView {
      * through tolerantly (undefined when the body carried none — an older
      * plugin — and the diagnostics row stays hidden). */
     uploadProbe: Readonly<Record<string, unknown>> | undefined;
+    appearanceProfile?: string;
     /** MS-6: every paired server of the pool, in pairing order. Empty on a
      * legacy body (or a row-less unpaired answer) — the pre-MS-6 page shape. */
     servers: readonly ClientServerView[];
@@ -450,6 +455,7 @@ export interface ClaimRouteBody {
      * `entryId` — the token never reaches the browser in pool mode). The
      * wizard records it as the step-3 selected server. */
     entryId?: unknown;
+    appearanceProfile?: unknown;
     /** The normalized address the backend validated — what the form writes. */
     serverUrl?: unknown;
     code?: string;
@@ -983,6 +989,7 @@ export declare class ZenRemoteSettingsForm {
     clearDeviceToken(): Promise<boolean>;
     /** Persist a host appearance change alongside the row's other instant edits. */
     writeHostAppearance(op: SettingsFormOp): Promise<boolean>;
+    writeHostAppearanceFields(ops: readonly SettingsFormOp[]): Promise<boolean>;
     /**
      * Drop ONE field's staged draft (T60): after the pairing write landed the
      * name in the row, the draft that produced it is stale — it now equals the

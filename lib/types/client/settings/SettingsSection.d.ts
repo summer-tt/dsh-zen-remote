@@ -32,7 +32,6 @@
  * summary view renders its one-liner alone and never fetches a thing.
  */
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots';
-import type { HostAppearanceStore } from '../../client-data/session-host-appearance.ts';
 import type { ZenRemoteSettingsForm } from '../../client-data/settings-form.ts';
 import { NS } from '../locales.ts';
 import type { SharesStore } from '../../client-data/shares.ts';
@@ -42,7 +41,6 @@ export interface SettingsSectionProps extends PropsRuntime<'plugins.row.config'>
     /** The shared shares store (injected share, T33b) — the same singleton the
      * title-row icon and the session menu read. */
     shares: SharesStore;
-    appearance: HostAppearanceStore;
 }
 export declare function SettingsSection(props: SettingsSectionProps): import("react").JSX.Element;
 //# sourceMappingURL=SettingsSection.d.ts.map

@@ -52,6 +52,10 @@ export interface RelayPoolEntryView {
     serverUrl: string;
     /** The handshake's server id; the persisted record id until one lands. */
     serverId: string | undefined;
+    /** Device identity of the current pairing after its first confirmed handshake. */
+    confirmedPairingId?: string;
+    pairingDeviceId?: string;
+    identityPending?: true;
     /** The handshake's server name; the persisted name until one lands. */
     serverName: string | undefined;
     /** {@link deriveDisplayServerNames} over the current entries. */

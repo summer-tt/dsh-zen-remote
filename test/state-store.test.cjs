@@ -315,6 +315,25 @@ test('recordServerHandshake records the handshake and removes stale same-serverI
   assert.equal(listPairedServers(file).length, 2)
 })
 
+test('a new pairing is not deduplicated by the old identity while it waits for its handshake', (t) => {
+  const { upsertPairedServer, recordServerHandshake, listPairedServers } = mod
+  const file = tempStateFile(t)
+  const serverUrl = 'http://10.0.0.1:3088'
+  const first = upsertPairedServer(file, { serverUrl, token: 'old', deviceId: 'old-device' })
+  recordServerHandshake(file, first.record.id, { serverId: 'aaaaaaaa', serverName: 'First' })
+  upsertPairedServer(file, { serverUrl, token: 'new' })
+  const pending = listPairedServers(file)[0]
+  assert.equal(pending.identityPending, true)
+  assert.equal(pending.deviceId, undefined)
+  const alias = upsertPairedServer(file, { serverUrl: 'http://10.0.0.2:3088', token: 'alias' })
+  assert.deepEqual(recordServerHandshake(file, alias.record.id, { serverId: 'aaaaaaaa', serverName: 'First' }), { removedEntryIds: [] })
+  recordServerHandshake(file, first.record.id, { serverId: 'bbbbbbbb', serverName: 'Second' })
+  const confirmed = listPairedServers(file).find(row => row.id === first.record.id)
+  assert.equal(confirmed.serverId, 'bbbbbbbb')
+  assert.equal(confirmed.identityPending, undefined)
+  assert.equal(listPairedServers(file).length, 2)
+})
+
 // ---- 6. remove/clear ----
 
 test('removePairedServer and clearPairedServers answer what they did', (t) => {

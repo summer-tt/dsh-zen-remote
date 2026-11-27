@@ -77,6 +77,8 @@ export interface PairedServerRecord {
   /** The server's 8-hex id as of the last completed handshake; unset until
    * the first one succeeds. */
   serverId?: string
+  /** Existing serverId belongs to an earlier pairing until the new credentials handshake. */
+  identityPending?: true
   /** The server's display name as of the last completed handshake. */
   serverName?: string
   /** This device's id on that server, as the pairing registered it. */
@@ -522,6 +524,7 @@ function normalizeRecord(value: unknown): PairedServerRecord | undefined {
   if (!isFiniteNumber(createdAt)) return undefined
   const record: PairedServerRecord = { id, serverUrl, token, createdAt }
   if (isLegalServerId(value.serverId)) record.serverId = value.serverId
+  if (value.identityPending === true) record.identityPending = true
   if (typeof value.serverName === 'string' && value.serverName !== '') record.serverName = value.serverName
   if (typeof value.deviceId === 'string' && value.deviceId !== '') record.deviceId = value.deviceId
   if (typeof value.deviceName === 'string' && value.deviceName !== '') record.deviceName = value.deviceName
@@ -573,10 +576,12 @@ export function upsertPairedServer(
   if (existingIndex !== -1) {
     const updated: PairedServerRecord = {
       ...records[existingIndex],
+      ...(records[existingIndex]?.token === token ? {} : { identityPending: true as const }),
       token,
       ...(deviceId !== undefined ? { deviceId } : {}),
       ...(deviceName !== undefined ? { deviceName } : {}),
     }
+    if (deviceId === undefined && records[existingIndex]?.token !== token) delete updated.deviceId
     const nextServers = [...records]
     nextServers[existingIndex] = updated
     writeStateFile(filePath, (current) => ({ ...current, version: 1, servers: nextServers }))
@@ -608,6 +613,7 @@ export function recordServerHandshake(
   const nextServers: PairedServerRecord[] = []
   for (const record of records) {
     if (record.id === entryId) {
+      delete record.identityPending
       nextServers.push({
         ...record,
         serverId: handshake.serverId,
@@ -616,7 +622,7 @@ export function recordServerHandshake(
       })
       continue
     }
-    if (record.serverId === handshake.serverId) {
+    if (record.identityPending !== true && record.serverId === handshake.serverId) {
       removed.push(record.id)
       continue
     }

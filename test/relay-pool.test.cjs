@@ -19,8 +19,11 @@ const { pathToFileURL } = require('node:url')
 const MODULE_URL = pathToFileURL(path.join(__dirname, '..', 'lib', 'relay-pool.js')).href
 
 let mod
+let relayCredentialsDigest
 test.before(async () => {
   mod = await import(MODULE_URL)
+  const relayModule = await import(pathToFileURL(path.join(__dirname, '..', 'lib', 'relay-client.js')).href)
+  relayCredentialsDigest = relayModule.relayCredentialsDigest
 })
 
 function tempStateFile(t) {
@@ -79,6 +82,7 @@ function makeFakeClientFactory(env) {
           dshVersion: 'test',
           fingerprints: {},
         }
+        this.lastHandshakeDigest = relayCredentialsDigest(url, token)
         this.state = 'online'
         this.notify()
         return this.handshakeInfo
@@ -516,4 +520,26 @@ test('pool.pair() forwards the pool.maxServers() cap to the state store (PG-2)',
   const onDisk = JSON.parse(fs.readFileSync(stateFile, 'utf8'))
   assert.equal(onDisk.servers.length, 2)
   pool.stop()
+})
+
+
+test('re-pair waits for current credentials before confirming the appearance identity', async (t) => {
+  const url = 'http://10.0.0.1:3088'
+  const env = new Map([[`${url}|old-token`, { serverId: 'aaaaaaaa', serverName: 'old' }]])
+  const { created, factory } = makeFakeClientFactory(env)
+  const pool = mod.createRelayPool(baseOptions(tempStateFile(t), { createClient: factory }))
+  const first = await pool.pair({ serverUrl: url, token: 'old-token', deviceId: 'old-device' })
+  await settle()
+  assert.equal(pool.getByEntryId(first.entry.entryId).confirmedPairingId, 'old-device')
+  const next = await pool.pair({ serverUrl: url, token: 'new-token', deviceId: 'new-device' })
+  assert.equal(next.entry.entryId, first.entry.entryId)
+  assert.equal(next.entry.serverId, 'aaaaaaaa')
+  assert.equal(next.entry.identityPending, true)
+  assert.equal(next.entry.confirmedPairingId, undefined)
+  env.set(`${url}|new-token`, { serverId: 'bbbbbbbb', serverName: 'new' })
+  await created[0].connect()
+  const confirmed = pool.getByEntryId(first.entry.entryId)
+  assert.equal(confirmed.serverId, 'bbbbbbbb')
+  assert.equal(confirmed.confirmedPairingId, 'new-device')
+  assert.equal(confirmed.identityPending, undefined)
 })

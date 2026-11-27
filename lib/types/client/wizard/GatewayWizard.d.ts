@@ -17,9 +17,11 @@ import type { ReactNode } from 'react';
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots';
 import type { ZenRemoteSettingsForm } from '../../client-data/settings-form.ts';
 import { NS } from '../locales.ts';
+import { type HostAppearanceStore } from '../../client-data/session-host-appearance.ts';
 export interface GatewayWizardProps extends PropsRuntime<'plugins.bundle.config'>, PropsLocale<typeof NS> {
     /** The row's staged-form controller — saved-role source of truth. */
     config: ZenRemoteSettingsForm;
+    appearance: HostAppearanceStore;
     /** One atomic row write (the wiring stages through configForms.mutate). */
     saveRowFields: (fields: Record<string, unknown>, options?: {
         unset?: readonly string[];

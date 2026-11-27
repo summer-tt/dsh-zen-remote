@@ -83,7 +83,15 @@ export declare const zh: {
     readonly chipCustomize: "自定义入口";
     readonly 'settings.summary': "配对、设备、网关、推送与会话主机图标设置";
     readonly 'hostAppearance.title': "会话主机图标";
-    readonly 'hostAppearance.hint': "外观按主机保存，改动即时生效。顶栏只显示远程会话的主机图标。";
+    readonly 'hostAppearance.edit': "图标和颜色";
+    readonly 'hostAppearance.localEdit': "本机图标和颜色";
+    readonly 'hostAppearance.general': "本机图标与显示选项";
+    readonly 'hostAppearance.pairHint': "可选。确认服务端身份后保存所选外观，留空会保留已有设置。";
+    readonly 'hostAppearance.awaitHandshake': "等待服务端确认身份，以便保存图标和颜色。";
+    readonly 'hostAppearance.discardPending': "放弃待保存的外观";
+    readonly 'hostAppearance.pairingMissing': "找不到此次配对，外观尚未保存。";
+    readonly 'hostAppearance.unsupportedPairing': "已配对，但这次未能记录服务端身份。服务端连接后可在“管理服务端”中设置外观。";
+    readonly 'hostAppearance.hint': "外观按主机保存，保存后立即生效。顶栏只显示远程会话的主机图标。";
     readonly 'hostAppearance.hostLabel': "会话主机：{host}";
     readonly 'hostAppearance.local': "本机";
     readonly 'hostAppearance.enabled': "显示会话主机图标";

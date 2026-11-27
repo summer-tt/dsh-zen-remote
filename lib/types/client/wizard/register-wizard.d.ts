@@ -16,6 +16,7 @@
  * writes rows.
  */
 import type { ClientContext } from '../compat/types.ts';
+import type { HostAppearanceStore } from '../../client-data/session-host-appearance.ts';
 import type { GatewayWizard } from './GatewayWizard.tsx';
 declare module '@deepseek-ai/dsh-client-ui-slots' {
     interface SlotMap {
@@ -47,5 +48,5 @@ export interface SaveRowFieldsOptions {
  * @param section - the block component; a parameter so this module stays
  *   JSX-free and importable under Node's type stripping.
  */
-export declare function registerGatewayWizard(ctx: ClientContext, section: typeof GatewayWizard): void;
+export declare function registerGatewayWizard(ctx: ClientContext, section: typeof GatewayWizard, appearance: HostAppearanceStore): void;
 //# sourceMappingURL=register-wizard.d.ts.map

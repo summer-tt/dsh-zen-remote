@@ -5,7 +5,7 @@ export declare const HOST_COLORS: readonly ["gray", "blue", "teal", "violet", "a
 export declare const HOST_ICONS: readonly ["monitor", "server", "laptop", "cloud", "terminal"];
 export type HostColor = (typeof HOST_COLORS)[number];
 export type HostIcon = (typeof HOST_ICONS)[number];
-interface HostStyle {
+export interface HostStyle {
     color?: HostColor;
     icon?: HostIcon;
 }
@@ -27,5 +27,4 @@ export declare function createHostAppearanceStore(): {
     subscribe(listener: () => void): () => void;
     attach(form: SettingsFormScope): () => void;
 };
-export {};
 //# sourceMappingURL=session-host-appearance.d.ts.map

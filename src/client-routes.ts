@@ -49,6 +49,7 @@ import {
 import type { PeerEngine, PeerEngineStatus } from './peer/engine.js'
 import type { PeerMemberPath, PeerMemberState } from './peer/engine.js'
 import { responseJson, sameOriginPost } from './http.js'
+import { createHash } from 'node:crypto'
 import { compareBridges, isT3FavoritesBridge, parseFavoriteUpdate, T3_FAVORITES_PATH, T3_FAVORITES_PLUGIN, T3_FAVORITES_SET_PATH } from './plugin-bridge.js'
 import type { BridgeRegistry, BridgeStatus, FavoriteUpdate } from './plugin-bridge.js'
 import { RELAY_HTTP_ROUTES } from './relay-access.js'
@@ -77,6 +78,11 @@ export interface SessionHostSummary {
 
 /** POST `{serverUrl, code, name}`: redeem a desktop pairing code. */
 export const CLIENT_CLAIM_ROUTE = `${CLIENT_ROUTE_PREFIX}/claim`
+
+function appearanceProfileKey(options: ClientHandlerOptions): string | undefined {
+  const profile = options.getProfileName?.() ?? process.env.DSH_PROFILE_DIR ?? process.env.DSH_PROFILE
+  return profile === undefined ? undefined : createHash('sha256').update(profile).digest('hex')
+}
 
 /** GET: the current connection state (never carries the token). */
 export const CLIENT_STATUS_ROUTE = `${CLIENT_ROUTE_PREFIX}/status`
@@ -745,6 +751,9 @@ function poolServerStatus(entry: RelayPoolEntryView, options: ClientHandlerOptio
   const body: Record<string, unknown> = {
     entryId: entry.entryId,
     serverId: entry.serverId,
+    ...(entry.confirmedPairingId === undefined ? {} : { confirmedPairingId: entry.confirmedPairingId }),
+    ...(entry.pairingDeviceId === undefined ? {} : { pairingDeviceId: entry.pairingDeviceId }),
+    ...(entry.identityPending === true ? { identityPending: true } : {}),
     serverUrl: entry.serverUrl,
     serverName: entry.serverName ?? '',
     displayName: entry.displayName,
@@ -792,9 +801,11 @@ async function poolStatusBodyOf(options: ClientHandlerOptions): Promise<Record<s
     : []
   const withDiagnostics = diagnosticsDecorator(options, first?.client, bridgeOverride)
   const servers = entries.map((entry) => poolServerStatus(entry, options))
+  const profileKey = appearanceProfileKey(options)
+  const profile = profileKey === undefined ? {} : { appearanceProfile: profileKey }
   const maxServers = effectiveMaxServers(pool, options)
   if (first === undefined) {
-    return withDiagnostics({ state: 'unpaired', maxServers, servers })
+    return withDiagnostics({ state: 'unpaired', maxServers, servers, ...profile })
   }
   const body = deviceStatusBody(
     first.client.state,
@@ -804,7 +815,7 @@ async function poolStatusBodyOf(options: ClientHandlerOptions): Promise<Record<s
   )
   if (first.client.nextRetryAt !== null && first.client.nextRetryAt !== undefined) body.nextRetryAt = first.client.nextRetryAt
   if (first.client.lastError !== undefined) body.lastError = first.client.lastError
-  return withDiagnostics({ ...body, maxServers, servers })
+  return withDiagnostics({ ...body, maxServers, servers, ...profile })
 }
 
 /**
@@ -1312,8 +1323,10 @@ export function createClientHandler(options: ClientHandlerOptions): ClientHandle
           responseJson(res, paired.code === 'limit-reached' ? 409 : 400, { ok: false, code: paired.code })
           return
         }
+        const profileKey = appearanceProfileKey(options)
         responseJson(res, 200, {
           ok: true,
+          ...(profileKey === undefined ? {} : { appearanceProfile: profileKey }),
           entryId: paired.entry.entryId,
           deviceId: outcome.deviceId,
           deviceName: outcome.deviceName,

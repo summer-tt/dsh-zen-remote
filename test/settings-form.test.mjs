@@ -1,3 +1,4 @@
+import { confirmedAppearanceHost, hostStyleOps, readPendingHostAppearance, storePendingHostAppearance } from '../src/client-data/paired-host-appearance.ts'
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
@@ -1345,4 +1346,45 @@ test('sidebar hover names the owning host and disambiguates older rosters', () =
   assert.equal(hostDisplayName('cccc3333', status, 'Local'), 'Local (cccc3333)')
   assert.equal(hostDisplayName('dddd4444', status, 'Local'), 'dddd4444')
   assert.equal(hostDisplayName('eeee5555', status, 'Local'), 'eeee5555')
+})
+
+
+test('appearance drafts stay tied to the exact confirmed pairing and preserve untouched overrides', async () => {
+  const pending = { entryId: 'entry', pairingId: 'new-device', serverUrl: 'http://example.test', style: { color: 'teal' } }
+  assert.equal(confirmedAppearanceHost(pending, []), undefined)
+  assert.equal(confirmedAppearanceHost(pending, [{ entryId: 'entry', serverId: 'aaaaaaaa', confirmedPairingId: 'earlier-device' }]), undefined)
+  assert.equal(confirmedAppearanceHost(pending, [{ entryId: 'other-entry', serverId: 'bbbbbbbb', confirmedPairingId: 'new-device' }]), undefined)
+  assert.equal(confirmedAppearanceHost(pending, [{ entryId: 'entry', serverId: 'local', confirmedPairingId: 'new-device' }]), undefined)
+  assert.equal(confirmedAppearanceHost(pending, [{ entryId: 'entry', serverId: 'bbbbbbbb', confirmedPairingId: 'new-device' }]), 'bbbbbbbb')
+  const { scope, state } = fakeScope()
+  const form = new ZenRemoteSettingsForm(scope)
+  assert.equal(await form.writeHostAppearanceFields(hostStyleOps('bbbbbbbb', pending.style)), true)
+  assert.deepEqual(state.mutateCalls[0].ops, [{ op: 'set', path: ['sessionHostAppearance', 'hosts', 'bbbbbbbb', 'color'], value: 'teal' }])
+  assert.equal(await form.writeHostAppearanceFields(hostStyleOps('bbbbbbbb', { icon: 'cloud' }, { color: 'teal' })), true)
+  assert.deepEqual(state.mutateCalls[1].ops, [
+    { op: 'unset', path: ['sessionHostAppearance', 'hosts', 'bbbbbbbb', 'color'] },
+    { op: 'set', path: ['sessionHostAppearance', 'hosts', 'bbbbbbbb', 'icon'], value: 'cloud' },
+  ])
+  form.dispose()
+})
+
+test('a cancelled appearance draft is absent and a successful claim can survive reload', t => {
+  const storage = new Map()
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'sessionStorage')
+  Object.defineProperty(globalThis, 'sessionStorage', { configurable: true, value: {
+    getItem: key => storage.get(key) ?? null,
+    setItem: (key, value) => storage.set(key, value),
+    removeItem: key => storage.delete(key),
+  } })
+  t.after(() => descriptor === undefined ? Reflect.deleteProperty(globalThis, 'sessionStorage') : Object.defineProperty(globalThis, 'sessionStorage', descriptor))
+  const pending = { entryId: 'entry', pairingId: 'new-device', serverUrl: 'http://example.test', profile: 'web-profile', style: { icon: 'laptop' } }
+  assert.equal(readPendingHostAppearance(), undefined)
+  storePendingHostAppearance(pending)
+  assert.deepEqual(readPendingHostAppearance(), pending)
+  assert.equal([...storage.values()][0].includes('token'), false)
+  const rows = [{ entryId: 'entry', serverId: 'bbbbbbbb', confirmedPairingId: 'new-device' }]
+  assert.equal(confirmedAppearanceHost(pending, rows, 'another-profile'), undefined)
+  assert.equal(confirmedAppearanceHost(pending, rows, 'web-profile'), 'bbbbbbbb')
+  storePendingHostAppearance(undefined)
+  assert.equal(readPendingHostAppearance(), undefined)
 })

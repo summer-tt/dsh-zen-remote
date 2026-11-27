@@ -111,7 +111,7 @@ export function registerSettingsPage(ctx: ClientContext, section: typeof Setting
         locale: NS,
         // The T33b shared-session list rides the same shares store singleton
         // as the title-row icon and the session menu — one poll loop total.
-        inject: () => ({ config, shares: getSharesStore(), appearance }),
+        inject: () => ({ config, shares: getSharesStore() }),
       }, section)),
     ), 'dsh-zen-remote: row config page')
   })

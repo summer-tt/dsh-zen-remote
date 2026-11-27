@@ -135,7 +135,7 @@ export function apply(ctx: ClientContext): void {
   // 过滤（kind === 'row' && pkg.name === 'dsh-zen-remote'）、保存角色检查
   // （client 角色不渲染）、viaGateway 时全部操作禁用。样式全部作用在组件
   // 自身的 data 属性下，≥1024px 的其他页面逐像素不受影响。
-  registerGatewayWizard(ctx, GatewayWizard)
+  registerGatewayWizard(ctx, GatewayWizard, hostAppearance)
 
   // T33b 会话共享的三个入口里前两个（标题行远程图标、会话右键菜单项）：
   // 同样必须在桌面门之前注册——桌面端 App 就是主服务端，图标和菜单恰好

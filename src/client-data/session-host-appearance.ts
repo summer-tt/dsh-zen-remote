@@ -8,7 +8,7 @@ export const HOST_ICONS = ['monitor', 'server', 'laptop', 'cloud', 'terminal'] a
 export type HostColor = (typeof HOST_COLORS)[number]
 export type HostIcon = (typeof HOST_ICONS)[number]
 
-interface HostStyle {
+export interface HostStyle {
   color?: HostColor
   icon?: HostIcon
 }
