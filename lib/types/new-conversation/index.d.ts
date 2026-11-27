@@ -1,4 +1,5 @@
 import type { Context } from '@deepseek-ai/cordis';
+import { type DraftControlsAddress, type DraftControlSelection, type DraftModelControls } from './model-controls.js';
 import { type DraftImagePart } from '../client-data/draft-images.js';
 export { isManagedConversation } from './journal.js';
 export { saveRecentConversationHost } from './preferences.js';
@@ -12,6 +13,7 @@ export interface NewConversationRequest {
     readonly creationRequestId: string;
     readonly requestId: string;
     readonly model: ConversationModel;
+    readonly modelControls?: DraftControlSelection;
     readonly text: string;
     readonly images?: readonly DraftImagePart[];
     readonly agentPreset?: string;
@@ -43,6 +45,7 @@ export declare class NewConversationHost {
     private readonly services;
     constructor(services: NewConversationHostOptions);
     isManaged(sessionId: unknown): boolean;
+    describeModelControls(address: DraftControlsAddress): Promise<DraftModelControls>;
     /** `scope` is supplied by the authenticated server call site, independently of the wire request. */
     submit(scope: string, input: NewConversationRequest, options?: NewConversationOptions): Promise<{
         sessionId: string;
@@ -54,6 +57,9 @@ export declare class NewConversationHost {
     private workspace;
     private validateModel;
     private flush;
+    private draftModelControls;
+    private applyDraftModelControls;
+    private resolvePreset;
     private presets;
     private service;
 }

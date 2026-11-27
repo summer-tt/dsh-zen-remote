@@ -8,6 +8,7 @@ import {
   type ListDraftFileCandidates,
 } from './new-conversation/draft-file-candidates.js'
 import { DRAFT_SKILL_CANDIDATES_METHOD, draftSkillRows, draftSkillsUnsupported, parseDraftSkillRequest, type ListDraftSkillCandidates } from './new-conversation/draft-skill-candidates.js'
+import { DRAFT_MODEL_CONTROLS_METHOD, parseDraftControlsAddress, parseDraftModelControls, type DraftControlsAddress, type DraftModelControls } from './new-conversation/model-controls.js'
 import type { RelayPool } from './relay-pool.js'
 import { RelayError } from './relay-client.js'
 import { SESSION_REFERENCE_URI, decodeSessionReferenceUri, encodeSessionReferenceUri } from './session-reference.js'
@@ -24,6 +25,7 @@ interface Options {
   submitLocal(request: NewConversationRequest): Promise<{ sessionId: string }>
   listLocalDraftFileCandidates: ListDraftFileCandidates
   listLocalDraftSkillCandidates?: ListDraftSkillCandidates
+  describeLocalModelControls?(address: DraftControlsAddress): Promise<DraftModelControls>
   onRemoteCreated(sessionId: string): void
 }
 
@@ -57,12 +59,19 @@ function translatedPrompt(text: string, hostId: string): string {
 }
 
 async function submitRemote(options: Options, hostId: string, request: NewConversationRequest): Promise<{ sessionId: string }> {
-  const relay = requireSessionHostRelay(options.getPool(), hostId)
+  const pool = options.getPool()
+  if (request.modelControls !== undefined && pool?.getByServerId(hostId)?.identityPending === true) {
+    throw new ClientRouteError(503, 'remote-connecting', 'Waiting for the selected Host')
+  }
+  const relay = requireSessionHostRelay(pool, hostId)
   if (relay.handshakeInfo?.supportsCreateDraft !== true) {
     throw new NewConversationError(409, 'remote-unsupported', 'The selected Host does not support this new conversation flow')
   }
   if (request.images !== undefined && relay.handshakeInfo.supportsCreateDraftImages !== true) {
     throw new NewConversationError(409, 'draft-images-unsupported', 'The selected Host does not support images in a new conversation')
+  }
+  if (request.modelControls !== undefined && relay.handshakeInfo.supportsDraftModelControls !== true) {
+    throw new NewConversationError(409, 'draft-model-controls-unsupported', 'The selected Host cannot apply draft model controls')
   }
   const result = await relay.invoke('session', 'createWithFirstMessage', {
     request: { ...request, text: translatedPrompt(request.text, hostId) },
@@ -124,6 +133,45 @@ async function lookupDraftCandidates(options: Options, hostId: string, method: s
   }
 }
 
+async function describeDraftModelControls(options: Options, hostId: string, input: unknown, res: ServerResponse): Promise<void> {
+  const address = parseDraftControlsAddress(input)
+  if (address === undefined) throw new NewConversationError(400, 'bad-request', 'Invalid draft model address')
+  const controller = new AbortController()
+  const close = () => { if (!res.writableEnded) controller.abort() }
+  res.once('close', close)
+  if (res.destroyed) close()
+  try {
+    controller.signal.throwIfAborted()
+    let value: unknown = {}
+    if (hostId === 'local') value = await options.describeLocalModelControls?.(address) ?? {}
+    else {
+      const pool = options.getPool()
+      if (pool?.getByServerId(hostId)?.identityPending === true) throw new ClientRouteError(503, 'remote-connecting', 'Waiting for the selected Host')
+      const relay = requireSessionHostRelay(pool, hostId)
+      if (relay.handshakeInfo?.supportsDraftModelControls === true) {
+        const credentials = relay.lastHandshakeDigest
+        let interrupted = false
+        const unsubscribe = relay.subscribe(state => { if (state !== 'online') interrupted = true })
+        try {
+          value = await relay.invoke('session', DRAFT_MODEL_CONTROLS_METHOD, { request: address }, controller.signal)
+        } finally {
+          unsubscribe()
+        }
+        const current = options.getPool()?.getByServerId(hostId)
+        if (interrupted || current?.client !== relay || current.identityPending === true ||
+          relay.state !== 'online' || credentials !== relay.lastHandshakeDigest) {
+          throw new ClientRouteError(503, 'remote-binding-changed', 'The selected Host connection changed')
+        }
+      }
+    }
+    const result = parseDraftModelControls(value)
+    if (result === undefined) throw new NewConversationError(502, 'invalid-reply', 'Invalid Host draft model controls')
+    if (!controller.signal.aborted) responseJson(res, 200, { ok: true, value: result })
+  } finally {
+    res.off('close', close)
+  }
+}
+
 export function createNewConversationRoute(options: Options) {
   return async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const admission = options.admit(req)
@@ -142,9 +190,9 @@ export function createNewConversationRoute(options: Options) {
       return
     }
     try {
-      const { hostId, request: incoming, fileCandidates, skillCandidates, ...rest } = await bodyOf(req)
+      const { hostId, request: incoming, fileCandidates, skillCandidates, modelControls, ...rest } = await bodyOf(req)
       if (typeof hostId !== 'string' || !/^(?:local|[a-f0-9]{8})$/u.test(hostId) || Object.keys(rest).length !== 0
-        || [incoming, fileCandidates, skillCandidates].filter(value => value !== undefined).length !== 1) {
+        || [incoming, fileCandidates, skillCandidates, modelControls].filter(value => value !== undefined).length !== 1) {
         throw new NewConversationError(400, 'bad-request', 'Select the conversation Host and one draft operation')
       }
       if (fileCandidates !== undefined) {
@@ -160,6 +208,10 @@ export function createNewConversationRoute(options: Options) {
             if (options.listLocalDraftSkillCandidates === undefined) throw draftSkillsUnsupported()
             return options.listLocalDraftSkillCandidates(request, signal)
           }, value => draftSkillRows(value, request), draftSkillsUnsupported)
+        return
+      }
+      if (modelControls !== undefined) {
+        await describeDraftModelControls(options, hostId, modelControls, res)
         return
       }
       const request = parseNewConversationRequest(incoming)

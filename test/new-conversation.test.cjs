@@ -108,6 +108,74 @@ async function fixture(t) {
   return { directory, log, stored, live, currentModel, workspace, services, newHost }
 }
 
+test('draft controls describe defaults without a Session and initialize explicit values before the first prompt', async (t) => {
+  const { newHost, log, services, live } = await fixture(t)
+  const selected = { contextWindow: 500000, speed: 'fast' }
+  const defaults = { contextWindow: { options: [272000, 500000], value: 272000 }, speed: { options: ['standard', 'fast'], value: 'standard' } }
+  const applied = new Map()
+  services.magpieDraftModelControls = {
+    describe(address) { assert.deepEqual(address, { provider: selection.provider, model: selection.model }); return defaults },
+    validate({ controls }) { assert.deepEqual(controls, selected); log.push(['validate controls']) },
+    initialize({ sessionId, controls }) {
+      log.push(['initialize controls', sessionId]); assert.equal(live.has(sessionId), false)
+      applied.set(sessionId, controls)
+    },
+  }
+  const host = newHost()
+  const address = { provider: selection.provider, model: selection.model, agentPreset: 'chosen' }
+  assert.deepEqual(await host.describeModelControls(address), defaults)
+  assert.deepEqual(await host.describeModelControls({ ...address, workspaceId: request.workspaceId }), defaults)
+  await assert.rejects(host.describeModelControls({ ...address, workspaceId: 'missing' }), { code: 'workspace-not-found' })
+  assert.deepEqual(log, [])
+  const prompt = services.sessionController.prompt
+  services.sessionController.prompt = async (input, signal) => {
+    assert.deepEqual(applied.get(input.sessionId), selected)
+    assert.deepEqual(live.get(input.sessionId).model.current(), selection)
+    return prompt(input, signal)
+  }
+  const payload = { ...request, agentPreset: 'chosen', modelControls: selected }
+  const first = await host.submit('owner', payload)
+  assert.deepEqual(await newHost().submit('owner', { ...payload, modelControls: { speed: 'fast', contextWindow: 500000 } }), first)
+  await assert.rejects(newHost().submit('owner', { ...payload, modelControls: { speed: 'standard' } }), { code: 'creation-conflict' })
+  const names = log.map(([name]) => name)
+  assert.equal(names.filter(name => name === 'initialize controls').length, 1)
+  assert.equal(names.filter(name => name === 'prompt').length, 1)
+  assert.ok(names.indexOf('mount') < names.indexOf('initialize controls'))
+  assert.ok(names.indexOf('initialize controls') < names.indexOf('publish'))
+})
+
+test('a failed controls seed resumes the reservation before sending the first prompt', async (t) => {
+  const { newHost, log, services } = await fixture(t)
+  let writes = 0
+  services.magpieDraftModelControls = {
+    describe() { return {} }, validate() {},
+    initialize() { if (++writes === 1) throw new Error('write failed') },
+  }
+  const payload = { ...request, modelControls: { speed: 'fast' } }
+  await assert.rejects(newHost().submit('owner', payload), /write failed/)
+  assert.equal(log.some(([name]) => name === 'prompt' || name === 'attach'), false)
+  const { sessionId } = await newHost().submit('owner', payload)
+  assert.deepEqual(log.filter(([name]) => name === 'create' || name === 'resume'), [['create', sessionId], ['resume', sessionId]])
+  assert.equal(log.filter(([name]) => name === 'prompt').length, 1)
+  assert.equal(writes, 2)
+})
+
+test('invalid draft settings and older Magpie installs cannot enqueue a prompt with silently discarded settings', async (t) => {
+  const { newHost, log, services, directory } = await fixture(t)
+  const payload = { ...request, modelControls: { speed: 'fast' } }
+  assert.deepEqual(await newHost().describeModelControls({ provider: selection.provider, model: selection.model }), {})
+  await assert.rejects(newHost().submit('owner', payload), { code: 'draft-model-controls-unsupported' })
+  services.magpieDraftModelControls = {
+    describe() { return {} },
+    validate() { throw Object.assign(new Error('invalid choices'), { code: 'draft-model-controls-invalid' }) },
+    initialize() { assert.fail('cannot initialize') },
+  }
+  await assert.rejects(newHost().submit('owner', payload), { code: 'draft-model-controls-rejected' })
+  assert.deepEqual(await readdir(directory), [])
+  assert.deepEqual(log, [])
+  assert.ok((await newHost().submit('owner', request)).sessionId)
+})
+
 test('loads the public model-selection listener from the launched DSH package and matches the live registry', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'zr-agent-package-'))
   t.after(() => rm(root, { recursive: true, force: true }))
@@ -469,6 +537,42 @@ async function listenForDraftRequests(t, handler) {
   return `http://127.0.0.1:${server.address().port}`
 }
 
+test('draft capabilities dispatch only to the chosen Host and gracefully omit fields on an older peer', async (t) => {
+  const { newHost, services, log } = await fixture(t)
+  const address = { provider: selection.provider, model: selection.model, agentPreset: 'preset-a' }
+  const local = { speed: { options: ['standard', 'fast'], value: 'standard' } }
+  const remote = { speed: { options: ['standard', 'ultrafast'], value: 'ultrafast' } }
+  services.magpieDraftModelControls = { describe: () => local, validate() {}, initialize() {} }
+  const calls = []
+  const modern = {
+    entryId: 'paired', client: { state: 'online', handshakeInfo: { serverId: 'aaaaaaaa', supportsCreateDraft: true, supportsDraftModelControls: true },
+      subscribe: () => () => {}, invoke: async (...args) => { calls.push(args); return remote } },
+  }
+  const legacy = { entryId: 'legacy', client: { state: 'online', handshakeInfo: { serverId: 'bbbbbbbb', supportsCreateDraft: true }, invoke: () => assert.fail('older Host must not be invoked') } }
+  const entries = new Map([['aaaaaaaa', modern], ['bbbbbbbb', legacy]])
+  const host = newHost()
+  const handler = createNewConversationRoute({
+    admit: () => ({ peer: {} }), getPool: () => ({ getByServerId: id => entries.get(id), isVirtual: () => false }),
+    describeLocalModelControls: input => host.describeModelControls(input),
+    submitLocal: () => assert.fail('reading controls must not create a Session'),
+  })
+  const base = await listenForDraftRequests(t, handler)
+  const post = payload => postDraftLookup(base + NEW_CONVERSATION_ROUTE, payload)
+  const read = (hostId, modelControls) => post({ hostId, modelControls })
+  assert.deepEqual((await read('local', address)).body, { ok: true, value: local })
+  assert.deepEqual((await read('local', { ...address, workspaceId: request.workspaceId })).body, { ok: true, value: local })
+  const remoteAddress = { ...address, agentPreset: 'preset-b', workspaceId: request.workspaceId }
+  assert.deepEqual((await read('aaaaaaaa', remoteAddress)).body, { ok: true, value: remote })
+  assert.deepEqual(calls[0].slice(0, 3), ['session', 'draftModelControls', { request: remoteAddress }])
+  assert.deepEqual((await read('bbbbbbbb', address)).body, { ok: true, value: {} })
+  assert.equal((await read('aaaaaaaa', { ...address, provider: toVirtual('bbbbbbbb', 'test') })).status, 400)
+  assert.equal((await post({ hostId: 'local', request, modelControls: address })).status, 400)
+  const oldWrite = await post({ hostId: 'bbbbbbbb', request: { ...request, modelControls: { speed: 'fast' } } })
+  assert.equal(oldWrite.body.error.code, 'draft-model-controls-unsupported')
+  assert.equal(calls.length, 1)
+  assert.deepEqual(log, [])
+})
+
 const draftLookup = { workspaceId: request.workspaceId, query: 'src/' }
 const candidates = [{ path: 'src/code.ts', kind: 'file' }, { path: 'src/nested', kind: 'directory' }]
 
@@ -668,6 +772,32 @@ test('draft skill HTTP lookup discards a response from a replaced Host connectio
   })
   assert.equal((await postDraftLookup(url, { hostId: 'bbbbbbbb', skillCandidates: input })).status, 404)
   assert.equal((await postDraftLookup(url, { hostId: 'aaaaaaaa', skillCandidates: input, request })).status, 400)
+})
+
+test('the relay dispatches an authenticated exact draft lookup without creating a Session', async (t) => {
+  const { directory, log } = await fixture(t)
+  const secret = 'a'.repeat(64)
+  const headers = { 'x-zen-remote-secret': secret, 'x-zen-remote-via': 'gateway',
+    'x-zen-remote-role': 'desktop-client', 'x-zen-remote-device': 'device-1' }
+  const address = { provider: selection.provider, model: selection.model, workspaceId: request.workspaceId, agentPreset: 'preset-a' }
+  const value = { contextWindow: { options: [272000, 500000], value: 500000 } }
+  const handler = createRelayHandler({
+    secret, store: createShareStore({ file: join(directory, 'shares.json'), idleHours: 48 }),
+    serverInfo: { serverId: '0123abcd', serverName: () => 'test', dshVersion: 'test' },
+    gateway: { invoke() { assert.fail('must use the dedicated draft read') } },
+    describeDraftModelControls: async input => { log.push(input); return value },
+    createWithFirstMessage() { assert.fail('lookup cannot create an Agent') },
+  })
+  const origin = await listenForDraftRequests(t, handler)
+  const read = (args = { request: address }, auth = headers) => postDraftLookup(`${origin}/_dsh/zen-remote/relay/v1/invoke`,
+    { namespace: 'session', method: 'draftModelControls', args }, auth)
+  assert.equal((await read(undefined, { ...headers, 'x-zen-remote-role': 'browser' })).status, 401)
+  assert.equal((await read(undefined, { ...headers, 'x-zen-remote-device': '' })).status, 403)
+  assert.equal((await read({ request: { ...address, sessionId: 'unexpected' } })).status, 400)
+  assert.equal((await read({ request: address, modelControls: { speed: 'fast' } })).status, 400)
+  assert.deepEqual(log, [])
+  assert.deepEqual(await read(), { status: 200, body: { ok: true, value } })
+  assert.deepEqual(log, [address])
 })
 
 test('updates just the current profile row preference through the config editor', async () => {

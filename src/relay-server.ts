@@ -44,6 +44,7 @@ import {
 import {
   MAGPIE_CONTROLS_MAX_REPLY_BYTES, MAGPIE_CONTROLS_METHOD, magpieControlsFetchRequest, parseMagpieControlsRequest,
 } from './magpie-controls.js'
+import { DRAFT_MODEL_CONTROLS_METHOD, parseDraftControlsAddress, type DraftControlsAddress, type DraftModelControls } from './new-conversation/model-controls.js'
 import type { ShareStore } from './share-store.js'
 import { ensureServerIdMigrated, readStateFile, STATE_FILE_NAME, writeStateFile } from './state-store.js'
 import { decideHttpRoute, decideInvoke, decideStream, decideUploadQuery, parseEventResultBody } from './relay-access.js'
@@ -292,6 +293,7 @@ export interface RelayHandlerOptions {
   /** Whether the current Host composition can browse directories for Workspace adoption. */
   supportsWorkspaceAdd?: () => boolean
   /** Create and submit on behalf of an authenticated paired device. */
+  describeDraftModelControls?: (address: DraftControlsAddress) => Promise<DraftModelControls>
   createWithFirstMessage?: (device: string, request: unknown, authorize: () => void) => Promise<{ sessionId: string }>
   /** List read-only Workspace paths on behalf of an authenticated paired device. */
   listDraftFileCandidates?: ListDraftFileCandidates
@@ -1788,6 +1790,7 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
         serverName: serverInfo.serverName(),
         dshVersion: serverInfo.dshVersion,
         ...(options.createWithFirstMessage === undefined ? {} : { supportsCreateDraft: true, supportsCreateDraftImages: true }),
+        ...(options.describeDraftModelControls === undefined ? {} : { supportsDraftModelControls: true }),
         ...(options.supportsWorkspaceAdd?.() === true ? { supportsWorkspaceAdd: true } : {}),
         // T42: the server's own interface fingerprints (empty when the wiring
         // had nothing to compute — the client judges group by group).
@@ -1932,7 +1935,8 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
       const isDraftFileCandidates = namespace === 'session' && method === DRAFT_FILE_CANDIDATES_METHOD
       const isDraftSkillCandidates = namespace === 'session' && method === DRAFT_SKILL_CANDIDATES_METHOD
       const isMagpieControls = namespace === 'session' && method === MAGPIE_CONTROLS_METHOD
-      const decision = isDraftSubmission || isDraftFileCandidates || isDraftSkillCandidates || isMagpieControls
+      const isDraftModelControls = namespace === 'session' && method === DRAFT_MODEL_CONTROLS_METHOD
+      const decision = isDraftSubmission || isDraftFileCandidates || isDraftSkillCandidates || isDraftModelControls || isMagpieControls
         ? { allow: true as const, filter: undefined }
         : decideInvoke(namespace, method, args, isAccessible)
       if (!decision.allow) {
@@ -2025,6 +2029,16 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
           hangUp.signal.throwIfAborted()
           const value = await options.listDraftFileCandidates(request, hangUp.signal)
           if (!hangUp.signal.aborted) responseJson(res, 200, { ok: true, value: draftFileCandidateRows(value) })
+          return
+        }
+        if (isDraftModelControls) {
+          if (device === '') throw new NewConversationError(403, 'forbidden', 'An authenticated device is required')
+          if (options.describeDraftModelControls === undefined) throw new NewConversationError(501, 'unsupported', 'Draft model controls are unavailable')
+          const address = isPlainObject(args) && Object.keys(args).length === 1 ? parseDraftControlsAddress(args.request) : undefined
+          if (address === undefined) throw new NewConversationError(400, 'bad-request', 'Invalid draft model address')
+          hangUp.signal.throwIfAborted()
+          const value = await options.describeDraftModelControls(address)
+          if (!hangUp.signal.aborted) responseJson(res, 200, { ok: true, value })
           return
         }
         if (isDraftSubmission) {
@@ -2233,7 +2247,7 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
           if (!res.destroyed) responseJson(res, 503, { ok: false, error: { code: 'draft-skills-unavailable' } })
         } else if (isDraftFileCandidates && !(error instanceof NewConversationError)) {
           if (!res.destroyed) responseJson(res, 500, { ok: false, error: { code: 'draft-file-candidates-failed' } })
-        } else if ((isDraftSubmission || isDraftFileCandidates || isDraftSkillCandidates) && error instanceof NewConversationError) {
+        } else if ((isDraftSubmission || isDraftFileCandidates || isDraftSkillCandidates || isDraftModelControls) && error instanceof NewConversationError) {
           if (!res.destroyed) responseJson(res, error.status, { ok: false, error: { code: error.code } })
         } else {
           await responseCompressedJson(req, res, 200, errorEnvelopeOf(error))

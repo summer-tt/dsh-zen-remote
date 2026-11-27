@@ -3,6 +3,7 @@ import type { AdminAdmission } from './admin-routes.js';
 import { type NewConversationRequest } from './new-conversation/index.js';
 import { type ListDraftFileCandidates } from './new-conversation/draft-file-candidates.js';
 import { type ListDraftSkillCandidates } from './new-conversation/draft-skill-candidates.js';
+import { type DraftControlsAddress, type DraftModelControls } from './new-conversation/model-controls.js';
 import type { RelayPool } from './relay-pool.js';
 export declare const NEW_CONVERSATION_ROUTE = "/_dsh/zen-remote/new-conversation";
 interface Options {
@@ -15,6 +16,7 @@ interface Options {
     }>;
     listLocalDraftFileCandidates: ListDraftFileCandidates;
     listLocalDraftSkillCandidates?: ListDraftSkillCandidates;
+    describeLocalModelControls?(address: DraftControlsAddress): Promise<DraftModelControls>;
     onRemoteCreated(sessionId: string): void;
 }
 export declare function createNewConversationRoute(options: Options): (req: IncomingMessage, res: ServerResponse) => Promise<void>;

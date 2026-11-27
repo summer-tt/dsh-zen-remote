@@ -28,6 +28,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { type ListDraftSkillCandidates } from './new-conversation/draft-skill-candidates.js';
 import { type ListDraftFileCandidates } from './new-conversation/draft-file-candidates.js';
+import { type DraftControlsAddress, type DraftModelControls } from './new-conversation/model-controls.js';
 import type { ShareStore } from './share-store.js';
 import type { ServerPluginEntry, BridgeRegistry } from './plugin-bridge.js';
 import { type PluginTunnelRoutes } from './plugin-tunnel.js';
@@ -144,6 +145,7 @@ export interface RelayHandlerOptions {
     /** Whether the current Host composition can browse directories for Workspace adoption. */
     supportsWorkspaceAdd?: () => boolean;
     /** Create and submit on behalf of an authenticated paired device. */
+    describeDraftModelControls?: (address: DraftControlsAddress) => Promise<DraftModelControls>;
     createWithFirstMessage?: (device: string, request: unknown, authorize: () => void) => Promise<{
         sessionId: string;
     }>;

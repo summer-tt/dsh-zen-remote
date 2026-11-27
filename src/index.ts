@@ -902,6 +902,7 @@ export function apply(ctx: Context, config: MobileNavConfig = {}): void {
         submitLocal: request => submitLocalConversation(request),
         listLocalDraftFileCandidates: listDraftFileCandidates,
         listLocalDraftSkillCandidates: listDraftSkillCandidates,
+        describeLocalModelControls: address => newConversation.describeModelControls(address),
         onRemoteCreated: sessionId => publishNewRemoteSession(sessionId),
       }),
     }), 'dsh-zen-remote: new conversation')
@@ -1520,6 +1521,7 @@ export function apply(ctx: Context, config: MobileNavConfig = {}): void {
           },
           listDraftFileCandidates,
           listDraftSkillCandidates,
+          describeDraftModelControls: address => newConversation.describeModelControls(address),
           createWithFirstMessage(device, incoming, authorize) {
             const request = parseNewConversationRequest(incoming)
             return newConversation.submit(`paired-device:${device}`, request, {

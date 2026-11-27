@@ -1,5 +1,6 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { ConversationJournal, digest, isManagedConversation, type Reservation } from './journal.js'
+import { parseDraftControlSelection, parseDraftModelControls, type DraftControlsAddress, type DraftControlSelection, type DraftModelControls } from './model-controls.js'
 import { loadHostModelSelection } from './model-selection.js'
 import { MAX_DRAFT_IMAGE_BYTES } from '../upload-limits.js'
 import { DRAFT_IMAGE_LIMIT, DRAFT_IMAGE_NAME_LIMIT, isDraftImageMediaType, type DraftImagePart } from '../client-data/draft-images.js'
@@ -18,6 +19,7 @@ export interface NewConversationRequest {
   readonly creationRequestId: string
   readonly requestId: string
   readonly model: ConversationModel
+  readonly modelControls?: DraftControlSelection
   readonly text: string
   readonly images?: readonly DraftImagePart[]
   readonly agentPreset?: string
@@ -70,8 +72,10 @@ export function parseNewConversationRequest(input: unknown): NewConversationRequ
   const fail = (): never => {
     throw new NewConversationError(400, 'bad-request', 'Invalid new conversation request')
   }
-  if (!record(input) || !hasOnly(input, ['workspaceId', 'creationRequestId', 'requestId', 'model', 'text', 'images', 'agentPreset', 'clientTimeZone'])) return fail()
+  if (!record(input) || !hasOnly(input, ['workspaceId', 'creationRequestId', 'requestId', 'model', 'modelControls', 'text', 'images', 'agentPreset', 'clientTimeZone'])) return fail()
   const { workspaceId, creationRequestId, requestId, model, text, agentPreset, clientTimeZone } = input
+  const modelControls = parseDraftControlSelection(input.modelControls)
+  if (input.modelControls !== undefined && modelControls === undefined) return fail()
   if (!validString(workspaceId, 256) || !validString(creationRequestId, 128) || !validString(requestId, 128)
     || typeof text !== 'string' || text.length > 256 * 1024 || Buffer.byteLength(text, 'utf8') > 256 * 1024
     || (agentPreset !== undefined && !validString(agentPreset, 256))
@@ -90,6 +94,7 @@ export function parseNewConversationRequest(input: unknown): NewConversationRequ
   return {
     workspaceId, creationRequestId, requestId, text,
     ...(images.length === 0 ? {} : { images }),
+    ...(modelControls === undefined ? {} : { modelControls }),
     model: { provider: model.provider, model: model.model, ...(model.reasoningEffort === undefined ? {} : { reasoningEffort: model.reasoningEffort }) },
     ...(agentPreset === undefined ? {} : { agentPreset }),
     ...(clientTimeZone === undefined ? {} : { clientTimeZone }),
@@ -141,7 +146,12 @@ type HostServices = {
     resolveCallConfig(selection: ConversationModel): Promise<unknown>
     resolveModelInfo?(provider: string, model: string): Promise<{ inputModalities?: readonly string[] }>
   }
-  agentPresets: { resolve(id?: string): Promise<{ id: string }>; mount(ctx: Context, id: string): Promise<unknown> }
+  agentPresets: { resolve(id?: string): Promise<{ id: string; broken?: string }>; mount(ctx: Context, id: string): Promise<unknown> }
+  magpieDraftModelControls: {
+    describe(model: ConversationModel): unknown
+    validate(input: ConversationModel & { controls: DraftControlSelection }): void
+    initialize(input: ConversationModel & { sessionId: string; controls: DraftControlSelection }): void
+  }
 }
 
 export type ShareState = 'initial' | 'recovering' | 'confirmed'
@@ -187,6 +197,17 @@ export class NewConversationHost {
     return isManagedConversation(sessionId)
   }
 
+  async describeModelControls(address: DraftControlsAddress): Promise<DraftModelControls> {
+    const controls = this.draftModelControls()
+    if (controls === undefined) return {}
+    if (address.workspaceId !== undefined) this.workspace(address.workspaceId)
+    await this.resolvePreset(address.agentPreset)
+    const model = { provider: address.provider, model: address.model }
+    const value = parseDraftModelControls(controls.describe(model))
+    if (value === undefined) throw new NewConversationError(502, 'invalid-reply', 'The Host returned invalid draft model controls')
+    return value
+  }
+
   /** `scope` is supplied by the authenticated server call site, independently of the wire request. */
   async submit(scope: string, input: NewConversationRequest, options: NewConversationOptions = {}): Promise<{ sessionId: string }> {
     const request = parseNewConversationRequest(input)
@@ -210,17 +231,15 @@ export class NewConversationHost {
     // Preserve the fingerprint of text-only reservations made by earlier versions.
     const fingerprint = digest([request.workspaceId, request.requestId, request.model.provider, request.model.model,
       request.model.reasoningEffort, request.text, request.agentPreset, request.clientTimeZone,
-      ...(request.images === undefined ? [] : [request.images])])
+      ...(request.images === undefined ? [] : [request.images]),
+      ...(request.modelControls === undefined ? [] : [{ modelControls: request.modelControls }])])
     let reservation = await journal.reservation()
     let validatedModel = false
     if (reservation === undefined) {
       await this.validateModel(request.model, request.images !== undefined)
       validatedModel = true
-      const presets = this.presets()
-      if (presets === undefined && request.agentPreset !== undefined) {
-        throw new NewConversationError(409, 'preset-unavailable', 'The selected Host has no Agent preset registry')
-      }
-      const preset = await presets?.resolve(request.agentPreset)
+      const preset = await this.resolvePreset(request.agentPreset)
+      if (request.modelControls !== undefined) this.applyDraftModelControls(request.model, request.modelControls)
       reservation = await journal.reserve(fingerprint, preset?.id)
     }
     if (reservation.fingerprint !== fingerprint) {
@@ -258,6 +277,7 @@ export class NewConversationHost {
     const controller = this.service('sessionController', ['prompt'])
     let agent = agents.get(sessionId)
     let facts = { selected: false, accepted: false, started: false }
+    const wasActive = agent !== undefined
     const existing = agent?.session.header ?? stored
     if (existing !== undefined) {
       this.validateSession(existing, workspace, reservation)
@@ -286,6 +306,13 @@ export class NewConversationHost {
           unpublished.model.select(model)
           await this.flush(sessions, unpublished)
         }
+        if (!facts.accepted && request.modelControls !== undefined) {
+          if (!sameModel(unpublished.model.current(), model)) {
+            throw new NewConversationError(409, 'model-conflict', 'The reserved session model changed during setup')
+          }
+          await authorize?.()
+          this.applyDraftModelControls(model, request.modelControls, sessionId)
+        }
       }
       const created = stored === undefined
         ? await agents.create({
@@ -303,6 +330,9 @@ export class NewConversationHost {
       await authorize?.()
       if (!sameModel(agent.model.current(), model)) {
         throw new NewConversationError(409, 'model-conflict', 'The reserved session model changed before prompt submission')
+      }
+      if (wasActive && request.modelControls !== undefined) {
+        this.applyDraftModelControls(model, request.modelControls, sessionId)
       }
       const content: Parameters<typeof controller.prompt>[0]['content'] = []
       if (request.text.trim() !== '') content.push({ type: 'text', text: request.text })
@@ -383,6 +413,40 @@ export class NewConversationHost {
     if (!await sessions.flush(agent.session)) {
       throw new NewConversationError(503, 'persistence-unavailable', 'The Host did not confirm session persistence')
     }
+  }
+
+  private draftModelControls(): HostServices['magpieDraftModelControls'] | undefined {
+    if (this.services.get('magpieDraftModelControls') === undefined) return undefined
+    return this.service('magpieDraftModelControls', ['describe', 'validate', 'initialize'])
+  }
+
+  private applyDraftModelControls(model: ConversationModel, controls: DraftControlSelection, sessionId?: string): void {
+    const service = this.draftModelControls()
+    if (service === undefined) throw new NewConversationError(409, sessionId === undefined ? 'draft-model-controls-unsupported' : 'draft-model-controls-unavailable',
+      'The Host has no draft model controls service')
+    try {
+      const input = { provider: model.provider, model: model.model, controls }
+      if (sessionId === undefined) service.validate(input)
+      else service.initialize({ ...input, sessionId })
+    } catch (cause) {
+      if (record(cause) && cause.code === 'draft-model-controls-invalid') {
+        throw new NewConversationError(409, sessionId === undefined ? 'draft-model-controls-rejected' : 'draft-model-controls-invalid',
+          'The selected draft controls are no longer available on the Host', { cause })
+      }
+      throw cause
+    }
+  }
+
+  private async resolvePreset(id?: string): Promise<{ id: string } | undefined> {
+    const presets = this.presets()
+    if (presets === undefined && id === undefined) return undefined
+    try {
+      const preset = await presets?.resolve(id)
+      if (preset !== undefined && preset.broken === undefined) return preset
+    } catch (cause) {
+      throw new NewConversationError(409, 'preset-unavailable', 'The selected Agent preset is unavailable', { cause })
+    }
+    throw new NewConversationError(409, 'preset-unavailable', 'The selected Agent preset is unavailable')
   }
 
   private presets(): HostServices['agentPresets'] | undefined {

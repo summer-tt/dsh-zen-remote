@@ -101,6 +101,7 @@ export interface RelayHandshake {
     /** The target can create a Session and accept the initial message in one operation. */
     supportsCreateDraft?: true;
     supportsCreateDraftImages?: true;
+    supportsDraftModelControls?: true;
     supportsWorkspaceAdd?: true;
     /**
      * The SERVER's record of THIS device's name (T59) — what the pairing

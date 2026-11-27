@@ -11,6 +11,7 @@ import type { RemoteDirectoryListing, RemoteWorkspaceActions } from './new-conve
 import type { WorkspaceHostOperation } from '../client-data/workspace-host.ts'
 import type { DraftSkillCandidate } from '../client-data/draft-skills.ts'
 import type { DraftImagePart } from '../client-data/draft-images.ts'
+import { parseDraftControlSelection, parseDraftModelControls, type DraftControlSelection, type DraftModelControls } from '../new-conversation/model-controls.ts'
 import { NewConversationTrigger } from './new-conversation/NewConversationTrigger.tsx'
 import { NEW_CONVERSATION_PANEL_ID, registerNewConversation, type NativeDraftNavigation } from './new-conversation/register.ts'
 
@@ -23,6 +24,7 @@ interface StoredSubmission {
   workspaceId: string
   text: string
   model: ModelSelection | null
+  modelControls?: DraftControlSelection
   clientTimeZone: string
   agentPreset?: string
   creationRequestId: string
@@ -36,9 +38,13 @@ const modeNames: Record<string, readonly [string, string]> = {
   minimal: ['极简模式', 'Minimal mode'], cordis: ['创造模式', 'Creator mode'],
 }
 interface Catalog { default: ModelSelection | null; groups: readonly { id: string; name: string; models: readonly { id: string; name?: string }[] }[]; routableProviders?: readonly string[] }
+interface ControlsRequest { key: string; controller: AbortController; value?: DraftModelControls }
 interface PickerProps {
   hostId: string; catalog: Catalog | null; selection: ModelSelection | null
   onSelect(model: ModelSelection): void; openerRef: { current: (() => void) | null }
+  modelControls?: DraftModelControls
+  modelControlSelection?: DraftControlSelection
+  onSelectModelControl?(field: 'speed' | 'contextWindow', value: string | number): void
   favorites?: readonly Favorite[]; setFavorite?(favorite: Favorite & { favorite: boolean }): Promise<void>
   catalogError?: string; favoritesError?: string; onReload?(): void; onReloadFavorites?(): void; disabled?: boolean
 }
@@ -58,6 +64,7 @@ class HostRequestError extends Error {}
 const rejectedBeforeCreation = new Set([
   'bad-request', 'body-too-large', 'origin-rejected', 'remote-mismatch', 'remote-unsupported',
   'references-require-session', 'workspace-not-found', 'model-unavailable', 'draft-images-unsupported',
+  'draft-model-controls-rejected', 'draft-model-controls-unsupported', 'preset-unavailable',
 ])
 
 async function call<T>(url: string, input?: unknown, signal?: AbortSignal): Promise<T> {
@@ -173,6 +180,8 @@ export function mountNewConversation(ctx: ClientContext): ((workspaceId?: string
   let presetHost: string | undefined
   let favorites: Favorite[] = []
   let selection: ModelSelection | null = null
+  let controlsRequest: ControlsRequest | undefined
+  let controlsSelection: { key: string; workspaceId: string | undefined; value: DraftControlSelection } | undefined
   let catalogError: string | undefined
   let favoritesError: string | undefined
   let picker: ComponentType<PickerProps> | undefined
@@ -182,6 +191,46 @@ export function mountNewConversation(ctx: ClientContext): ((workspaceId?: string
   let addedWorkspace: { hostId: HostId; workspaceId: string; label: string } | undefined
   const strings = () => copy(document.documentElement.lang.toLowerCase().startsWith('zh'))
   const model = () => selection ?? (catalog?.default != null && matches(catalog, catalog.default) ? catalog.default : null)
+  const selectedPreset = () => chosenPreset ?? presetRows.find(row => row.isDefault)?.id
+
+  function controlsTarget() {
+    const current = model()
+    const { hostId, workspaceId } = target.state.getSnapshot()
+    if (current === null) return undefined
+    const { provider, model: name } = current
+    const agentPreset = selectedPreset()
+    const key = JSON.stringify([hostId, agentPreset, provider, name])
+    return { key, requestKey: JSON.stringify([key, workspaceId]), hostId, workspaceId, address: { provider, model: name, agentPreset, workspaceId } }
+  }
+
+  function loadModelControls(force = false): void {
+    const current = controlsTarget()
+    if (controlsSelection !== undefined) {
+      if (current?.key !== controlsSelection.key || (controlsSelection.workspaceId !== undefined &&
+        controlsSelection.workspaceId !== current.workspaceId)) controlsSelection = undefined
+      else if (controlsSelection.workspaceId === undefined && current.workspaceId !== undefined) {
+        // Adopt the no-Workspace choice once, like the initial draft target.
+        controlsSelection = { ...controlsSelection, workspaceId: current.workspaceId }
+      }
+    }
+    const active = current !== undefined && isOpen() && picker !== undefined &&
+      (current.hostId === 'local' || hosts.some(host => host.hostId === current.hostId && host.state === 'online'))
+    if (active && !force && controlsRequest?.key === current.requestKey) return
+    controlsRequest?.controller.abort()
+    controlsRequest = undefined
+    if (!active) return
+    const controller = new AbortController()
+    const request: ControlsRequest = { key: current.requestKey, controller }
+    controlsRequest = request
+    void call<unknown>(CREATE, { hostId: current.hostId, modelControls: current.address }, controller.signal).then(result => {
+      if (disposed || controlsRequest !== request) return
+      const value = parseDraftModelControls(result)
+      if (value === undefined) return
+      request.value = value
+      publish()
+    }).catch(() => { /* Older Hosts and missing capabilities leave native model selection available. */ })
+  }
+
   let completionCache: {
     generation: number
     workspaces: ReturnType<typeof ctx.workspaces.list.getSnapshot>
@@ -195,6 +244,9 @@ export function mountNewConversation(ctx: ClientContext): ((workspaceId?: string
     const key = draftKey(state.hostId, state.workspaceId)
     const images = draftImages.read(key)
     const pending = readPending(state.hostId, state.workspaceId)
+    const controls = controlsTarget()
+    const preset = selectedPreset()
+    const capability = controls !== undefined && controlsRequest?.key === controls.requestKey ? controlsRequest.value : undefined
     const imageFailure = imageFailures.get(key)
     const workspaceSnapshot = ctx.workspaces.list.getSnapshot()
     const sessionSnapshot = ctx.sessions.list.getSnapshot()
@@ -231,7 +283,28 @@ export function mountNewConversation(ctx: ClientContext): ((workspaceId?: string
       ...group.models.map(row => createElement('option', { key: row.id, value: JSON.stringify([group.id, row.id]) }, row.name ?? row.id))))))
       : createElement(picker, {
         key: state.hostId, hostId: state.hostId, catalog, selection: model(), openerRef,
-        onSelect: next => { if (target.state.getSnapshot().catalogGeneration === state.catalogGeneration && matches(catalog, next)) { selection = next; publish() } },
+        onSelect: next => {
+          if (target.state.getSnapshot().generation !== state.generation || selectedPreset() !== preset || !matches(catalog, next)) return
+          selection = next
+          publish()
+        },
+        ...(controls === undefined || capability === undefined ? {} : {
+          modelControls: capability,
+          ...(controlsSelection?.key === controls.key ? { modelControlSelection: controlsSelection.value } : {}),
+          onSelectModelControl: (field: 'speed' | 'contextWindow', value: string | number) => {
+            if (controlsRequest?.key !== controls.requestKey || controlsRequest.value !== capability ||
+              controlsTarget()?.requestKey !== controls.requestKey) return
+            const allowed = field === 'speed'
+              ? capability.speed?.options.some(option => option === value)
+              : capability.contextWindow?.options.some(option => option === value)
+            if (!allowed) return
+            const prior = controlsSelection?.key === controls.key ? controlsSelection.value : undefined
+            const next = parseDraftControlSelection({ ...prior, [field]: value })
+            if (next === undefined) return
+            controlsSelection = { key: controls.key, workspaceId: controls.workspaceId, value: next }
+            publish()
+          },
+        }),
         ...(state.hostId === 'local' ? {} : { favorites, setFavorite: (change: Favorite & { favorite: boolean }) => updateFavorite(state.hostId, state.catalogGeneration, change) }),
         ...(catalogError === undefined ? {} : { catalogError }), ...(favoritesError === undefined ? {} : { favoritesError }),
         onReload: () => { void loadCatalog() }, onReloadFavorites: () => { void loadFavorites() },
@@ -250,7 +323,7 @@ export function mountNewConversation(ctx: ClientContext): ((workspaceId?: string
       ...(row.description === undefined ? {} : { description: row.description }),
     }))
     return { target: state, directory: roster, directoryError: roster.phase === 'error' ? roster.message : undefined,
-      workspaces, canAddRemoteWorkspace: host?.state === 'online' && host.supportsWorkspaceAdd === true, presets, agentPreset: chosenPreset ?? presetRows.find(row => row.isDefault)?.id,
+      workspaces, canAddRemoteWorkspace: host?.state === 'online' && host.supportsWorkspaceAdd === true, presets, agentPreset: preset,
       text: drafts.read(state.hostId, state.workspaceId), selection: model(), modelPicker: pickerNode,
       copy: { ...words, hostOffline },
       mainSessionId: mainSession(), images, completionSessions: completionCache.rows,
@@ -260,7 +333,13 @@ export function mountNewConversation(ctx: ClientContext): ((workspaceId?: string
       pendingImages: pending?.imageIds !== undefined,
       submitting: inFlight.has(key) }
   }
-  const publish = () => { if (!disposed) { const current = snap(); view.set(current); label.set(current.copy.title) } }
+  const publish = () => {
+    if (disposed) return
+    loadModelControls()
+    const current = snap()
+    view.set(current)
+    label.set(current.copy.title)
+  }
 
   async function reloadHosts() {
     const request = ++rosterRequest
@@ -305,6 +384,7 @@ export function mountNewConversation(ctx: ClientContext): ((workspaceId?: string
       catalog = hostId !== 'local' ? result.value : { ...result.value, groups: result.value.groups.filter(group => fromVirtual(group.id) === undefined) }
       if (selection !== null && !matches(catalog, selection)) selection = null
       catalogError = undefined
+      loadModelControls(true)
     } catch (error) {
       if (disposed || request !== catalogRequest) return
       catalog = null
@@ -455,10 +535,16 @@ export function mountNewConversation(ctx: ClientContext): ((workspaceId?: string
       return { ok: false as const, message: imagesUnavailable }
     }
     const revision = textRevision.get(key) ?? 0
+    const controls = controlsTarget()
+    const stagedControls = controlsSelection
+    const modelControls = controls !== undefined && stagedControls?.key === controls.key &&
+      staged?.provider === controls.address.provider && staged.model === controls.address.model ? stagedControls.value : undefined
+    const preset = modelControls === undefined ? chosenPreset : selectedPreset()
     const frozen: StoredSubmission = existing ?? {
       workspaceId, text, model: staged,
       clientTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-      ...(chosenPreset === undefined ? {} : { agentPreset: chosenPreset }),
+      ...(preset === undefined ? {} : { agentPreset: preset }),
+      ...(modelControls === undefined ? {} : { modelControls }),
       ...(currentImages.length === 0 ? {} : { imageIds: currentImages.map(image => image.id) }),
       creationRequestId: crypto.randomUUID(), requestId: crypto.randomUUID(),
     }
@@ -519,6 +605,7 @@ export function mountNewConversation(ctx: ClientContext): ((workspaceId?: string
         }
       }
       releasePending()
+      if (controlsSelection === stagedControls && frozen.modelControls !== undefined) controlsSelection = undefined
       if (!disposed && input.generation === target.state.getSnapshot().generation && submittedFrom === draftNavigation && isOpen()) {
         workspace?.openSession(result.sessionId)
       }
@@ -534,6 +621,20 @@ export function mountNewConversation(ctx: ClientContext): ((workspaceId?: string
           return { ok: false as const, message }
         }
         if (existing === null && rejectedBeforeCreation.has(code)) releasePending()
+        if (code === 'draft-model-controls-rejected' && existing === null) {
+          if (controlsSelection === stagedControls) controlsSelection = undefined
+          loadModelControls(true)
+          return { ok: false as const, message: zh
+            ? '所选 Host 的模型控件已变更，请重新选择窗口和速度后发送。'
+            : 'Model controls changed on this Host. Review the window and speed settings, then send again.' }
+        }
+        if (code === 'draft-model-controls-unsupported') {
+          if (existing === null && controlsSelection === stagedControls) controlsSelection = undefined
+          loadModelControls(true)
+          return { ok: false as const, message: zh
+            ? '所选 Host 当前不支持随首条消息应用模型控件。'
+            : 'This Host cannot apply model controls with the first message.' }
+        }
         if (code === 'draft-images-unsupported') return { ok: false as const, message: imagesUnavailable }
       }
       return { ok: false as const, message: code }
@@ -561,7 +662,7 @@ export function mountNewConversation(ctx: ClientContext): ((workspaceId?: string
     else {
       const signal = navigation.openSessionDraft()
       draftNavigation = signal
-      signal.addEventListener('abort', () => active.set(false), { once: true })
+      signal.addEventListener('abort', () => { active.set(false); loadModelControls() }, { once: true })
       active.set(true)
       restorePendingImages()
       publish()
@@ -581,6 +682,7 @@ export function mountNewConversation(ctx: ClientContext): ((workspaceId?: string
     remoteWorkspace,
     onSelectPreset: id => {
       if (!presetRows.some(row => row.id === id)) return
+      if (selectedPreset() !== id && selection !== null) selection = { provider: selection.provider, model: selection.model }
       chosenPreset = id
       publish()
     },
@@ -680,7 +782,8 @@ export function mountNewConversation(ctx: ClientContext): ((workspaceId?: string
     const stopSessions = ctx.sessions.list.subscribe(publish)
     const stopWorkspaces = ctx.workspaces.list.subscribe(publish)
     const stopPanel = ctx.layout.panelInfo.subscribe(() => {
-      if (navigation !== undefined || !isOpen()) return
+      if (navigation !== undefined) return
+      if (!isOpen()) { loadModelControls(); return }
       restorePendingImages()
       void reloadHosts(); void loadCatalog(); void loadFavorites(); void loadPresets()
     })
@@ -689,7 +792,12 @@ export function mountNewConversation(ctx: ClientContext): ((workspaceId?: string
     }, 5000)
     void preference().then(() => { if (!disposed) enabled.set(true) }, () => {})
     void reloadHosts()
-    return () => { disposed = true; window.clearInterval(interval); stopTarget(); stopSessions(); stopWorkspaces(); stopPanel(); stopDirectory(); target.dispose(); draftImages.dispose() }
+    return () => {
+      disposed = true
+      controlsRequest?.controller.abort()
+      window.clearInterval(interval)
+      stopTarget(); stopSessions(); stopWorkspaces(); stopPanel(); stopDirectory(); target.dispose(); draftImages.dispose()
+    }
   })
   return open
 }
