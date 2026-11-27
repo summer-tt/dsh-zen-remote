@@ -24,6 +24,7 @@
  * `slots.inject` simply waits for a declaration that never comes on an older
  * host, where the native entry is what users have.
  */
+import type { RemoteDirectoryListing } from './RemoteWorkspaceDialog.tsx'
 import type { ReactNode } from 'react'
 import type { ClientContext } from '../compat/types.ts'
 // Type-only: the renderer declares `ctx.slots` and the layout declares `ctx.layout` and `MainPanelId`.
@@ -50,6 +51,25 @@ export type NativeWorkspaceControl = (options: {
   allowAddWorkspace: boolean
   onPick: (id: string) => void
 }) => ReactNode
+
+/** Structural mirror for the older DSH type packages used at build time. */
+interface DirectoryBrowserProps {
+  open: boolean
+  busy: boolean
+  listDirectory(path?: string, signal?: AbortSignal): Promise<RemoteDirectoryListing>
+  createDirectory(path: string, name: string): Promise<string>
+  onOpen(path: string): void
+  onClose(): void
+}
+
+declare module '@deepseek-ai/dsh-client-ui-slots' {
+  interface SlotFactoryMap {
+    'directoryPicker.browser': { scope: 'root'; props: DirectoryBrowserProps }
+  }
+}
+
+export type RenderNativeDirectoryBrowser = (name: 'directoryPicker.browser', props: DirectoryBrowserProps,
+  options: { fallback: ReactNode }) => ReactNode
 
 export type NativeDraftPreset = (control: {
   options: readonly { id: string; name?: string; description?: string }[]

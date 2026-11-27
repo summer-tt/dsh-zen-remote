@@ -3,13 +3,14 @@ import { Button, IconFolderCloseRegular, IconPlusOutlineRegular, Input, Modal, o
 
 export interface RemoteDirectoryListing {
   readonly path: string
-  readonly crumbs: readonly { name: string; path: string }[]
+  readonly home: string
+  readonly crumbs: readonly { name: string; path: string; hidden: boolean }[]
   readonly entries: readonly { name: string; path: string; hidden: boolean }[]
   readonly truncated: boolean
 }
 
 export interface RemoteWorkspaceActions {
-  list(path: string | undefined, signal: AbortSignal): Promise<RemoteDirectoryListing>
+  list(path?: string, signal?: AbortSignal): Promise<RemoteDirectoryListing>
   createDirectory(path: string, name: string): Promise<string>
   add(path: string): Promise<void>
 }
@@ -53,6 +54,10 @@ function failureOf(error: unknown, fallback: OperationFailure): Feedback {
     case 'workspace/invalid-path': return 'invalidPath'
     default: return fallback
   }
+}
+
+export function remoteWorkspaceError(error: unknown, operation: OperationFailure, zh: boolean): string {
+  return remoteWorkspaceCopy(zh)[failureOf(error, operation)]
 }
 
 export function RemoteWorkspaceDialog({ host, zh, actions, available, onClose }: {

@@ -28,9 +28,10 @@
  * verdict is given whether an image arrives by paste or is restored.
  */
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
-import type { DraftSlotProps, NativeDraftPreset, NativeWorkspaceControl } from './register.ts'
+import type { DraftSlotProps, NativeDraftPreset, NativeWorkspaceControl, RenderNativeDirectoryBrowser } from './register.ts'
 import { fromVirtual } from '../../virtual-id.js'
-import { RemoteWorkspaceDialog, remoteWorkspaceCopy, type RemoteWorkspaceActions } from './RemoteWorkspaceDialog.tsx'
+import { NativeRemoteWorkspaceDialog } from './NativeRemoteWorkspaceDialog.tsx'
+import { remoteWorkspaceCopy, type RemoteWorkspaceActions } from './RemoteWorkspaceDialog.tsx'
 import {
   Button, IconChevronLeftOutlineRegular, IconChevronRightOutlineRegular, IconCloseFillRegular,
   IconFolderCloseRegular, IconPlusOutlineRegular, ImageLightbox, Menu, observeComposition, type ImageLightboxLabels, type MenuEntry,
@@ -293,6 +294,7 @@ export interface NewConversationPanelActions {
 export interface NewConversationPanelProps {
   readonly useView: UseNewConversationView
   readonly actions: NewConversationPanelActions
+  readonly renderFactorySlot?: RenderNativeDirectoryBrowser | undefined
 }
 
 /** The roster entry for a Host, or undefined for `local` and unknown Hosts. */
@@ -462,7 +464,11 @@ function workspacePathSuffix(path: string, paths: readonly string[]): string {
   return path
 }
 
-function DraftWorkspacePicker({ view, actions }: { view: NewConversationView; actions: NewConversationPanelActions }) {
+function DraftWorkspacePicker({ view, actions, renderFactorySlot }: {
+  view: NewConversationView
+  actions: NewConversationPanelActions
+  renderFactorySlot?: RenderNativeDirectoryBrowser | undefined
+}) {
   const { target, directory, workspaces, copy, canAddRemoteWorkspace } = view
   const { hostId, generation } = target
   const [open, setOpen] = useState(false)
@@ -520,8 +526,8 @@ function DraftWorkspacePicker({ view, actions }: { view: NewConversationView; ac
       }}
       disabled={directory.phase !== 'ready' || (items.length === 0 && !canAdd)}
     />
-    {adding && remote !== undefined && <RemoteWorkspaceDialog
-      host={hostName(copy, directory, hostId)} zh={zh} actions={remote} available={canAdd} onClose={() => setAdding(false)}
+    {adding && remote !== undefined && <NativeRemoteWorkspaceDialog
+      renderFactorySlot={renderFactorySlot} host={hostName(copy, directory, hostId)} zh={zh} actions={remote} available={canAdd} onClose={() => setAdding(false)}
     />}
   </>
 }
@@ -655,7 +661,7 @@ function DraftImageRail({ images, copy, locked, onRemove }: {
 }
 
 /** Host and workspace selection for the native hero row. */
-export function NewConversationTarget({ useView, actions, renderWorkspace, renderDraftPreset }: NewConversationPanelProps & { renderWorkspace?: NativeWorkspaceControl; renderDraftPreset?: NativeDraftPreset }) {
+export function NewConversationTarget({ useView, actions, renderWorkspace, renderDraftPreset, renderFactorySlot }: NewConversationPanelProps & { renderWorkspace?: NativeWorkspaceControl; renderDraftPreset?: NativeDraftPreset }) {
   const view = useView(state => state)
   const { target, directory, workspaces, presets, agentPreset, copy, returnSessionId } = view
   const [presetMenuOpen, setPresetMenuOpen] = useState(false)
@@ -692,7 +698,7 @@ export function NewConversationTarget({ useView, actions, renderWorkspace, rende
           if ((origin?.serverId ?? LOCAL_HOST) !== target.hostId) return
           actions.onSelectWorkspace(origin === undefined ? id : origin.id.replace(/^#\d+~/u, ''))
         },
-      }) : <DraftWorkspacePicker key={target.hostId} view={view} actions={actions} />}
+      }) : <DraftWorkspacePicker key={target.hostId} view={view} actions={actions} renderFactorySlot={renderFactorySlot} />}
       {renderDraftPreset === undefined ? fallbackPreset : renderDraftPreset({
         options: presets ?? [],
         selectedId: agentPreset,

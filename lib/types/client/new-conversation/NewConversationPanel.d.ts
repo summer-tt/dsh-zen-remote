@@ -28,7 +28,7 @@
  * verdict is given whether an image arrives by paste or is restored.
  */
 import { type ReactNode } from 'react';
-import type { DraftSlotProps, NativeDraftPreset, NativeWorkspaceControl } from './register.ts';
+import type { DraftSlotProps, NativeDraftPreset, NativeWorkspaceControl, RenderNativeDirectoryBrowser } from './register.ts';
 import { type RemoteWorkspaceActions } from './RemoteWorkspaceDialog.tsx';
 import { type DraftTargetState, type HostDirectorySnapshot, type HostId, type WorkspaceId } from './target.ts';
 /** One image attached to the draft, as the wiring already holds it. */
@@ -280,9 +280,10 @@ export interface NewConversationPanelActions {
 export interface NewConversationPanelProps {
     readonly useView: UseNewConversationView;
     readonly actions: NewConversationPanelActions;
+    readonly renderFactorySlot?: RenderNativeDirectoryBrowser | undefined;
 }
 /** Host and workspace selection for the native hero row. */
-export declare function NewConversationTarget({ useView, actions, renderWorkspace, renderDraftPreset }: NewConversationPanelProps & {
+export declare function NewConversationTarget({ useView, actions, renderWorkspace, renderDraftPreset, renderFactorySlot }: NewConversationPanelProps & {
     renderWorkspace?: NativeWorkspaceControl;
     renderDraftPreset?: NativeDraftPreset;
 }): import("react").JSX.Element;
