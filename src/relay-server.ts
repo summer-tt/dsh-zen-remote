@@ -36,6 +36,10 @@ import { promisify } from 'node:util'
 import { gzip } from 'node:zlib'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { NewConversationError, isManagedConversation } from './new-conversation/index.js'
+import {
+  DRAFT_FILE_CANDIDATES_METHOD, draftFileCandidateRows, draftFileCandidatesUnsupported, parseDraftFileCandidatesRequest,
+  type ListDraftFileCandidates,
+} from './new-conversation/draft-file-candidates.js'
 import type { ShareStore } from './share-store.js'
 import { ensureServerIdMigrated, readStateFile, STATE_FILE_NAME, writeStateFile } from './state-store.js'
 import { decideHttpRoute, decideInvoke, decideStream, decideUploadQuery, parseEventResultBody } from './relay-access.js'
@@ -285,6 +289,8 @@ export interface RelayHandlerOptions {
   supportsWorkspaceAdd?: () => boolean
   /** Create and submit on behalf of an authenticated paired device. */
   createWithFirstMessage?: (device: string, request: unknown, authorize: () => void) => Promise<{ sessionId: string }>
+  /** List read-only Workspace paths on behalf of an authenticated paired device. */
+  listDraftFileCandidates?: ListDraftFileCandidates
   /** Ancestor lookup for subagent reachability; defaults to "no parent". */
   parentOf?: (id: string) => string | undefined
   /** The host's `/api` shared-fetch dispatcher (T41b), probed lazily per
@@ -1888,7 +1894,8 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
         return
       }
       const isDraftSubmission = namespace === 'session' && method === 'createWithFirstMessage'
-      const decision = isDraftSubmission
+      const isDraftFileCandidates = namespace === 'session' && method === DRAFT_FILE_CANDIDATES_METHOD
+      const decision = isDraftSubmission || isDraftFileCandidates
         ? { allow: true as const, filter: undefined }
         : decideInvoke(namespace, method, args, isAccessible)
       if (!decision.allow) {
@@ -1915,7 +1922,23 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
         if (!res.writableEnded) hangUp.abort()
       }
       res.on('close', onClientGone)
+      if (res.destroyed) onClientGone()
       try {
+        if (isDraftFileCandidates) {
+          // Paired devices can already create a Session in any registered
+          // Workspace. This dedicated lookup returns only contained path names
+          // and their kinds, using the same Workspace IDs as submission.
+          if (device === '') throw new NewConversationError(403, 'forbidden', 'An authenticated device is required')
+          if (options.listDraftFileCandidates === undefined) throw draftFileCandidatesUnsupported()
+          if (!isPlainObject(args) || Object.keys(args).some(key => key !== 'request')) {
+            throw new NewConversationError(400, 'bad-request', 'Invalid draft file candidates invocation')
+          }
+          const request = parseDraftFileCandidatesRequest(args.request)
+          hangUp.signal.throwIfAborted()
+          const value = await options.listDraftFileCandidates(request, hangUp.signal)
+          if (!hangUp.signal.aborted) responseJson(res, 200, { ok: true, value: draftFileCandidateRows(value) })
+          return
+        }
         if (isDraftSubmission) {
           if (device === '' || options.createWithFirstMessage === undefined) {
             responseJson(res, 403, { ok: false, error: { code: 'unsupported' } })
@@ -2116,7 +2139,9 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
         // The gateway's own failures (unknown namespace, absent service) are
         // business answers, not transport errors: they ride a 200 envelope
         // like every other result, with the gateway's string code preserved.
-        if (isDraftSubmission && error instanceof NewConversationError) {
+        if (isDraftFileCandidates && !(error instanceof NewConversationError)) {
+          if (!res.destroyed) responseJson(res, 500, { ok: false, error: { code: 'draft-file-candidates-failed' } })
+        } else if ((isDraftSubmission || isDraftFileCandidates) && error instanceof NewConversationError) {
           if (!res.destroyed) responseJson(res, error.status, { ok: false, error: { code: error.code } })
         } else {
           await responseCompressedJson(req, res, 200, errorEnvelopeOf(error))

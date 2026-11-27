@@ -1,12 +1,14 @@
 const assert = require('node:assert/strict')
-const { mkdir, mkdtemp, readdir, readFile, rm, writeFile } = require('node:fs/promises')
+const { mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } = require('node:fs/promises')
 const { tmpdir } = require('node:os')
 const { join } = require('node:path')
 const { pathToFileURL } = require('node:url')
 const { test } = require('node:test')
 const { createServer } = require('node:http')
 const { createRelayHandler } = require('../lib/relay-server.js')
-const { createNewConversationRoute } = require('../lib/new-conversation-routes.js')
+const { createNewConversationRoute, NEW_CONVERSATION_ROUTE } = require('../lib/new-conversation-routes.js')
+const { createDraftFileCandidates } = require('../lib/new-conversation/draft-file-candidates.js')
+const { RelayError } = require('../lib/relay-client.js')
 const { toVirtual } = require('../lib/virtual-id.js')
 const { createShareStore } = require('../lib/share-store.js')
 const { encodeSessionReferenceUri } = require('../lib/session-reference.js')
@@ -366,6 +368,220 @@ test('draft HTTP requests send image bytes only to the selected Host and keep ol
   const large = { ...payload, images: [{ ...screenshot, data: 'AAAA'.repeat(600_000) }] }
   assert.equal((await submit('aaaaaaaa', large)).status, 200)
   assert.deepEqual(relayCalls.at(-1), ['aaaaaaaa', 'session', 'createWithFirstMessage', { request: large }])
+})
+
+test('draft lookup uses the released native search with Workspace roots, limits, and live contents', async (t) => {
+  if (!process.env.DSH_INSTALL_DIR) return t.skip('requires a launched DSH installation')
+  const entrypoint = join(process.env.DSH_INSTALL_DIR, 'lib/bin.js')
+  const { directory, log, workspace, services } = await fixture(t)
+  const root = await realpath(directory)
+  workspace.path = join(root, 'workspace')
+  const outside = join(root, 'outside')
+  await Promise.all([
+    mkdir(join(workspace.path, 'src'), { recursive: true }),
+    mkdir(join(workspace.path, 'node_modules'), { recursive: true }),
+    mkdir(outside),
+  ])
+  await Promise.all([
+    writeFile(join(workspace.path, 'src', 'hello.ts'), 'private file contents'),
+    writeFile(join(workspace.path, 'node_modules', 'hidden-dependency'), ''),
+    writeFile(join(workspace.path, '.hidden-file'), ''),
+    writeFile(join(outside, 'outside-secret'), ''),
+    symlink(outside, join(workspace.path, 'external'), 'junction'),
+    ...Array.from({ length: 24 }, (_, i) => writeFile(join(workspace.path, `pick-${i}.txt`), '')),
+  ])
+  const lookup = createDraftFileCandidates(() => services.workspaceRegistry, entrypoint)
+  const query = (query, workspaceId = request.workspaceId, signal = new AbortController().signal) => lookup({ workspaceId, query }, signal)
+  assert.deepEqual(await query('src/'), [{ path: 'src/hello.ts', kind: 'file' }])
+  assert.deepEqual(await query('hello'), [{ path: 'src/hello.ts', kind: 'file' }])
+  assert.deepEqual((await query('src'))[0], { path: 'src', kind: 'directory' })
+  assert.equal((await query('pick')).length, 20)
+  for (const input of ['../outside/', 'src/../../outside/', outside + '/', 'C:\\Windows\\', 'external/', 'hidden-dependency', 'outside-secret', 'hidden-file']) {
+    assert.deepEqual(await query(input), [], input)
+  }
+  assert.deepEqual(await query('.hidden-file'), [{ path: '.hidden-file', kind: 'file' }])
+  await assert.rejects(query('', outside), { code: 'workspace-not-found' })
+  await assert.rejects(query('', request.workspaceId, AbortSignal.abort()), { name: 'AbortError' })
+  await rm(join(workspace.path, 'src', 'hello.ts'))
+  assert.deepEqual(await query('hello'), [])
+  workspace.path = join(workspace.path, 'external')
+  await assert.rejects(query(''), { code: 'workspace-not-found' })
+  assert.deepEqual(log, [])
+})
+
+test('draft lookup resolves the public search through a strict DSH Web dependency layout', async (t) => {
+  const { directory, workspace, services } = await fixture(t)
+  const root = await realpath(directory)
+  workspace.path = root
+  const entrypoint = join(root, 'dsh.mjs')
+  const web = join(root, 'node_modules', '@deepseek-ai', 'dsh-web-app')
+  const pkg = join(web, 'node_modules', '@deepseek-ai', 'dsh-file-reference-local')
+  await mkdir(pkg, { recursive: true })
+  await Promise.all([
+    writeFile(entrypoint, ''),
+    writeFile(join(web, 'package.json'), JSON.stringify({ exports: { './package.json': './package.json' } })),
+    writeFile(join(pkg, 'package.json'), JSON.stringify({ exports: './index.mjs' })),
+    writeFile(join(pkg, 'index.mjs'), `
+      export const DEFAULT_FILE_SEARCH_MAX_RESULTS = 20
+      export const DEFAULT_FILE_SEARCH_MAX_ENTRIES = 50000
+      export const DEFAULT_FILE_SEARCH_EXCLUDED_DIRECTORIES = ['node_modules']
+      export class WorkspaceFileSearch {
+        constructor(root, config) {
+          if (root !== ${JSON.stringify(root)} || config.maxResults !== 20 || config.maxEntries !== 50000
+              || config.excludedDirectories[0] !== 'node_modules') throw new Error('Expected the native defaults and registry root')
+        }
+        async list(query, signal) {
+          signal.throwIfAborted()
+          return [{ path: query, kind: 'file' }]
+        }
+        dispose() {}
+      }
+    `),
+  ])
+  const lookup = createDraftFileCandidates(() => services.workspaceRegistry, entrypoint)
+  assert.deepEqual(await lookup({ workspaceId: request.workspaceId, query: 'example.txt' }, new AbortController().signal), [
+    { path: 'example.txt', kind: 'file' },
+  ])
+})
+
+test('draft lookup reports an unsupported DSH installation even when the Workspace is known', async (t) => {
+  const { services } = await fixture(t)
+  const lookup = createDraftFileCandidates(() => services.workspaceRegistry, '')
+  await assert.rejects(lookup({ workspaceId: request.workspaceId, query: '' }, new AbortController().signal), {
+    status: 409, code: 'draft-file-candidates-unsupported',
+  })
+})
+
+async function listenForDraftRequests(t, handler) {
+  const server = createServer((req, res) => { void handler(req, res).catch(error => res.destroy(error)) })
+  t.after(() => new Promise(resolve => { server.closeAllConnections(); server.close(resolve) }))
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  return `http://127.0.0.1:${server.address().port}`
+}
+
+const draftLookup = { workspaceId: request.workspaceId, query: 'src/' }
+const candidates = [{ path: 'src/code.ts', kind: 'file' }, { path: 'src/nested', kind: 'directory' }]
+
+async function postDraftLookup(url, payload, headers = {}, signal) {
+  const response = await fetch(url, {
+    method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(payload), signal,
+  })
+  return { status: response.status, body: await response.json() }
+}
+
+function abortProbe() {
+  let entered, aborted
+  const started = new Promise(resolve => { entered = resolve })
+  const closed = new Promise(resolve => { aborted = resolve })
+  return {
+    started, closed,
+    lookup(_request, signal) {
+      entered()
+      return new Promise((_, reject) => {
+        signal.addEventListener('abort', () => { aborted(); reject(signal.reason) }, { once: true })
+      })
+    },
+  }
+}
+
+test('draft candidate HTTP lookup enforces admission and targets only the selected Host', { timeout: 5000 }, async (t) => {
+  const local = abortProbe()
+  const remote = abortProbe()
+  const calls = []
+  const relays = new Map(['aaaaaaaa', 'bbbbbbbb', 'cccccccc'].map(hostId => [hostId, {
+    entryId: hostId,
+    client: {
+      state: 'online', handshakeInfo: { serverId: hostId },
+      async invoke(namespace, method, args, signal) {
+        calls.push([hostId, namespace, method, args])
+        if (hostId === 'bbbbbbbb') throw new RelayError('forbidden-method', undefined, 403)
+        if (hostId === 'cccccccc') return remote.lookup(args.request, signal)
+        const invalidPaths = ['/private/path', 'src/../outside', 'src/line\nbreak', 'src/"quote"', 'x'.repeat(4097)]
+        return [
+          ...invalidPaths.map(path => ({ path, kind: 'file' })),
+          { ...candidates[0], content: 'never forwarded' }, candidates[1],
+          ...Array.from({ length: 20 }, (_, i) => ({ path: `src/${i}.txt`, kind: 'file' })),
+        ]
+      },
+    },
+  }]))
+  const origin = await listenForDraftRequests(t, createNewConversationRoute({
+    admit: req => req.headers['x-test-denied'] ? { rejection: 401 } : { peer: {} },
+    getPool: () => ({ getByServerId: id => relays.get(id), isVirtual: () => false }),
+    getRecentHost: () => 'local', saveRecentHost: () => assert.fail('saved a Host preference'),
+    submitLocal: () => assert.fail('submitted a conversation'), onRemoteCreated: () => assert.fail('published a session'),
+    listLocalDraftFileCandidates: (input, signal) => {
+      calls.push(['local', input])
+      return input.query === 'cancel' ? local.lookup(input, signal) : Promise.resolve(candidates)
+    },
+  }))
+  const url = origin + NEW_CONVERSATION_ROUTE
+  const post = (hostId, fields = {}, headers, signal) => postDraftLookup(url, { hostId, fileCandidates: draftLookup, ...fields }, headers, signal)
+  assert.equal((await post('local', {}, { 'x-test-denied': 'yes' })).status, 401)
+  assert.equal((await post('local', {}, { origin: 'https://foreign.test' })).status, 403)
+  assert.equal((await post('local', {}, { 'x-zen-remote-via': 'gateway' })).status, 403)
+  for (const fields of [{ request }, { fileCandidates: { ...draftLookup, cwd: '/tmp' } }, { fileCandidates: { ...draftLookup, query: 'x'.repeat(4097) } }, { fileCandidates: { ...draftLookup, query: '\0' } }]) {
+    assert.equal((await post('local', fields)).status, 400)
+  }
+  assert.equal((await post('dddddddd')).status, 404)
+  assert.deepEqual(calls, [])
+  assert.deepEqual(await post('local'), { status: 200, body: { ok: true, value: candidates } })
+  assert.deepEqual(await post('aaaaaaaa'), { status: 200, body: { ok: true, value: [
+    ...candidates, ...Array.from({ length: 18 }, (_, i) => ({ path: `src/${i}.txt`, kind: 'file' })),
+  ] } })
+  assert.deepEqual(await post('bbbbbbbb'), { status: 409, body: { ok: false, error: { code: 'draft-file-candidates-unsupported' } } })
+  assert.deepEqual(calls, [
+    ['local', draftLookup],
+    ['aaaaaaaa', 'session', 'draftFileCandidates', { request: draftLookup }],
+    ['bbbbbbbb', 'session', 'draftFileCandidates', { request: draftLookup }],
+  ])
+  for (const [hostId, probe] of [['local', local], ['cccccccc', remote]]) {
+    const controller = new AbortController()
+    const result = assert.rejects(post(hostId, { fileCandidates: { ...draftLookup, query: 'cancel' } }, {}, controller.signal), { name: 'AbortError' })
+    await probe.started
+    controller.abort()
+    await Promise.all([result, probe.closed])
+  }
+})
+
+test('the specialized relay lookup checks device authentication and cancels on disconnect', { timeout: 5000 }, async (t) => {
+  const { directory, log } = await fixture(t)
+  const probe = abortProbe()
+  const secret = 'a'.repeat(64)
+  const headers = {
+    'x-zen-remote-secret': secret, 'x-zen-remote-via': 'gateway',
+    'x-zen-remote-role': 'desktop-client', 'x-zen-remote-device': 'device-1',
+  }
+  const base = {
+    secret, store: createShareStore({ file: join(directory, 'shares.json'), idleHours: 48 }),
+    serverInfo: { serverId: '0123abcd', serverName: () => 'test', dshVersion: 'test' },
+    gateway: { invoke() { assert.fail('forwarded the specialized request to the native gateway') } },
+    createWithFirstMessage() { assert.fail('submitted a conversation') },
+  }
+  const handler = createRelayHandler({ ...base, listDraftFileCandidates: (input, signal) => {
+    log.push(input)
+    return input.query === 'cancel' ? probe.lookup(input, signal) : Promise.resolve(candidates)
+  } })
+  const origin = await listenForDraftRequests(t, handler)
+  const older = await listenForDraftRequests(t, createRelayHandler(base))
+  const invoke = (args = { request: draftLookup }, auth = headers, signal, target = origin) => postDraftLookup(
+    `${target}/_dsh/zen-remote/relay/v1/invoke`, { namespace: 'session', method: 'draftFileCandidates', args }, auth, signal,
+  )
+  assert.equal((await invoke(undefined, { ...headers, 'x-zen-remote-secret': 'wrong' })).status, 401)
+  assert.equal((await invoke(undefined, { ...headers, 'x-zen-remote-role': 'browser' })).status, 401)
+  assert.equal((await invoke(undefined, { ...headers, 'x-zen-remote-device': '' })).status, 403)
+  assert.equal((await invoke({ request: draftLookup, cwd: '/tmp' })).status, 400)
+  assert.equal((await invoke({ request: { ...draftLookup, cwd: '/tmp' } })).status, 400)
+  assert.deepEqual(await invoke(undefined, headers, undefined, older), { status: 409, body: { ok: false, error: { code: 'draft-file-candidates-unsupported' } } })
+  assert.deepEqual(log, [])
+  assert.deepEqual(await invoke(), { status: 200, body: { ok: true, value: candidates } })
+  assert.deepEqual(log, [draftLookup])
+  const controller = new AbortController()
+  const result = assert.rejects(invoke({ request: { ...draftLookup, query: 'cancel' } }, headers, controller.signal), { name: 'AbortError' })
+  await probe.started
+  controller.abort()
+  await Promise.all([result, probe.closed])
+  assert.deepEqual(await invoke(), { status: 200, body: { ok: true, value: candidates } })
 })
 
 test('updates just the current profile row preference through the config editor', async () => {

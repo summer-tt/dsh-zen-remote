@@ -30,6 +30,7 @@
 import { type ReactNode } from 'react';
 import type { DraftSlotProps, NativeDraftPreset, NativeWorkspaceControl, RenderNativeDirectoryBrowser } from './register.ts';
 import { type RemoteWorkspaceActions } from './RemoteWorkspaceDialog.tsx';
+import type { DraftCompletionSession, DraftFileCandidate } from './completion.ts';
 import { type DraftTargetState, type HostDirectorySnapshot, type HostId, type WorkspaceId } from './target.ts';
 /** One image attached to the draft, as the wiring already holds it. */
 export interface DraftImageView {
@@ -178,6 +179,7 @@ export interface NewConversationView {
     readonly agentPreset?: string | undefined;
     /** The current target's draft text. */
     readonly text: string;
+    readonly completionSessions: readonly DraftCompletionSession[];
     /** The staged model; null until the user resolves one, which blocks submit. */
     readonly selection: ModelSelection | null;
     /**
@@ -249,7 +251,8 @@ export interface NewConversationPanelActions {
     readonly onSelectWorkspace: (workspaceId: WorkspaceId) => void;
     readonly remoteWorkspace?: (hostId: HostId, generation: number) => RemoteWorkspaceActions;
     readonly onSelectPreset?: (id: string) => void;
-    readonly onTextChange: (text: string) => void;
+    readonly onTextChange: (text: string, expectedGeneration?: number, expectedText?: string) => boolean;
+    readonly loadFileCandidates: (generation: number, query: string, signal: AbortSignal) => Promise<readonly DraftFileCandidate[]>;
     /**
      * Add pasted image files to the current draft. `generation` names the
      * target the paste was made on: the wiring drops it when the target has
@@ -291,7 +294,9 @@ export declare function NewConversationTarget({ useView, actions, renderWorkspac
  * Composer for a draft that has no Session binding yet: its text, and the
  * images pasted into it.
  */
-export declare function NewConversationComposer({ useView, actions }: NewConversationPanelProps): import("react").JSX.Element;
+export declare function NewConversationComposer({ useView, actions, legacy }: NewConversationPanelProps & {
+    legacy?: boolean;
+}): import("react").JSX.Element;
 export declare function NativeDraftTarget({ useActive, draftAvailable, children, targetSessionId, renderNativeTarget, ...draft }: DraftSlotProps): string | number | boolean | import("react").JSX.Element | Iterable<ReactNode> | null | undefined;
 export declare function NativeDraftComposer({ useActive, draftAvailable, children, ...draft }: DraftSlotProps): string | number | boolean | import("react").JSX.Element | Iterable<ReactNode> | null | undefined;
 /** Compatibility panel for DSH versions without the native draft slots. */

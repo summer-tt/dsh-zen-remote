@@ -3,6 +3,8 @@ import { mainSessionIdOf, type ClientContext, type SessionId } from './compat/ty
 import { fromVirtual } from '../virtual-id.js'
 import { DraftTarget, draftKey, hostSelectable, type HostDirectorySnapshot, type HostId, type Source } from './new-conversation/target.ts'
 import { browserDraftStorage, createDraftStore } from './new-conversation/draft-store.ts'
+import { draftCompletionSessions } from './new-conversation/completion-sessions.ts'
+import type { DraftFileCandidate } from './new-conversation/completion.ts'
 import { createDraftImageStore, createPendingImageStorage, encodeDraftImage, type DraftImageFailure, type DraftImageFile } from './new-conversation/draft-images.ts'
 import { NativeDraftComposer, NativeDraftTarget, NewConversationPanel, type ModelSelection, type NewConversationView, type SubmitInput } from './new-conversation/NewConversationPanel.tsx'
 import type { RemoteDirectoryListing, RemoteWorkspaceActions } from './new-conversation/RemoteWorkspaceDialog.tsx'
@@ -180,6 +182,12 @@ export function mountNewConversation(ctx: ClientContext): ((workspaceId?: string
   let addedWorkspace: { hostId: HostId; workspaceId: string; label: string } | undefined
   const strings = () => copy(document.documentElement.lang.toLowerCase().startsWith('zh'))
   const model = () => selection ?? (catalog?.default != null && matches(catalog, catalog.default) ? catalog.default : null)
+  let completionCache: {
+    generation: number
+    workspaces: ReturnType<typeof ctx.workspaces.list.getSnapshot>
+    sessions: ReturnType<typeof ctx.sessions.list.getSnapshot>
+    rows: ReturnType<typeof draftCompletionSessions>
+  } | undefined
 
   const snap = (): NewConversationView => {
     const state = target.state.getSnapshot()
@@ -188,7 +196,15 @@ export function mountNewConversation(ctx: ClientContext): ((workspaceId?: string
     const images = draftImages.read(key)
     const pending = readPending(state.hostId, state.workspaceId)
     const imageFailure = imageFailures.get(key)
-    const workspaces: NewConversationView['workspaces'][number][] = ctx.workspaces.list.getSnapshot().items.flatMap(row => {
+    const workspaceSnapshot = ctx.workspaces.list.getSnapshot()
+    const sessionSnapshot = ctx.sessions.list.getSnapshot()
+    if (completionCache?.generation !== state.generation || completionCache.workspaces !== workspaceSnapshot || completionCache.sessions !== sessionSnapshot) {
+      completionCache = {
+        generation: state.generation, workspaces: workspaceSnapshot, sessions: sessionSnapshot,
+        rows: draftCompletionSessions(state, workspaceSnapshot.items, sessionSnapshot.byId, workspaceSnapshot.archivedSessionIds),
+      }
+    }
+    const workspaces: NewConversationView['workspaces'][number][] = workspaceSnapshot.items.flatMap(row => {
       const ws = hostWorkspace(row.workspaceId)
       const hostName = hosts.find(host => host.hostId === ws.hostId)?.displayName
       const prefix = hostName === undefined ? undefined : `${hostName} · `
@@ -237,7 +253,7 @@ export function mountNewConversation(ctx: ClientContext): ((workspaceId?: string
       workspaces, canAddRemoteWorkspace: host?.state === 'online' && host.supportsWorkspaceAdd === true, presets, agentPreset: chosenPreset ?? presetRows.find(row => row.isDefault)?.id,
       text: drafts.read(state.hostId, state.workspaceId), selection: model(), modelPicker: pickerNode,
       copy: { ...words, hostOffline },
-      mainSessionId: mainSession(), returnSessionId, images,
+      mainSessionId: mainSession(), returnSessionId, images, completionSessions: completionCache.rows,
       ...(imageFailure === undefined ? {} : { imageFailure }),
       imageSubmitUnavailable: state.hostId !== 'local' && host?.state === 'online' && host.supportsCreateDraftImages !== true,
       pendingSubmission: pending !== null,
@@ -569,12 +585,27 @@ export function mountNewConversation(ctx: ClientContext): ((workspaceId?: string
       chosenPreset = id
       publish()
     },
-    onTextChange: text => {
+    onTextChange: (text, expectedGeneration, expectedText) => {
       const current = target.state.getSnapshot()
+      if (disposed || (expectedGeneration !== undefined && (!isOpen() || current.generation !== expectedGeneration))
+        || (expectedText !== undefined && drafts.read(current.hostId, current.workspaceId) !== expectedText)) return false
       const key = draftKey(current.hostId, current.workspaceId)
       textRevision.set(key, (textRevision.get(key) ?? 0) + 1)
       drafts.write(current.hostId, current.workspaceId, text)
       publish()
+      return true
+    },
+    async loadFileCandidates(generation, query, signal) {
+      const requested = target.state.getSnapshot()
+      const navigationAtRequest = draftNavigation
+      const isCurrent = () => !disposed && isOpen() && draftNavigation === navigationAtRequest
+        && target.state.getSnapshot().generation === generation
+      if (!isCurrent() || requested.workspaceId === undefined) return []
+      const candidates = await call<readonly DraftFileCandidate[]>(CREATE, {
+        hostId: requested.hostId, fileCandidates: { workspaceId: requested.workspaceId, query },
+      }, signal)
+      signal.throwIfAborted()
+      return isCurrent() ? candidates : []
     },
     onPasteImages: (generation, files) => {
       const current = target.state.getSnapshot()

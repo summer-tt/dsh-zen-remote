@@ -32,6 +32,8 @@ import type { DraftSlotProps, NativeDraftPreset, NativeWorkspaceControl, RenderN
 import { fromVirtual } from '../../virtual-id.js'
 import { NativeRemoteWorkspaceDialog } from './NativeRemoteWorkspaceDialog.tsx'
 import { remoteWorkspaceCopy, type RemoteWorkspaceActions } from './RemoteWorkspaceDialog.tsx'
+import { useDraftCompletion } from './DraftCompletionMenu.tsx'
+import type { DraftCompletionSession, DraftFileCandidate } from './completion.ts'
 import {
   Button, IconChevronLeftOutlineRegular, IconChevronRightOutlineRegular, IconCloseFillRegular,
   IconFolderCloseRegular, IconPlusOutlineRegular, ImageLightbox, Menu, observeComposition, type ImageLightboxLabels, type MenuEntry,
@@ -188,6 +190,7 @@ export interface NewConversationView {
   readonly agentPreset?: string | undefined
   /** The current target's draft text. */
   readonly text: string
+  readonly completionSessions: readonly DraftCompletionSession[]
   /** The staged model; null until the user resolves one, which blocks submit. */
   readonly selection: ModelSelection | null
   /**
@@ -262,7 +265,8 @@ export interface NewConversationPanelActions {
   readonly onSelectWorkspace: (workspaceId: WorkspaceId) => void
   readonly remoteWorkspace?: (hostId: HostId, generation: number) => RemoteWorkspaceActions
   readonly onSelectPreset?: (id: string) => void
-  readonly onTextChange: (text: string) => void
+  readonly onTextChange: (text: string, expectedGeneration?: number, expectedText?: string) => boolean
+  readonly loadFileCandidates: (generation: number, query: string, signal: AbortSignal) => Promise<readonly DraftFileCandidate[]>
   /**
    * Add pasted image files to the current draft. `generation` names the
    * target the paste was made on: the wiring drops it when the target has
@@ -714,7 +718,7 @@ export function NewConversationTarget({ useView, actions, renderWorkspace, rende
  * Composer for a draft that has no Session binding yet: its text, and the
  * images pasted into it.
  */
-export function NewConversationComposer({ useView, actions }: NewConversationPanelProps) {
+export function NewConversationComposer({ useView, actions, legacy = false }: NewConversationPanelProps & { legacy?: boolean }) {
   // One subscription to the whole view: every member is published together
   // as one snapshot, so selecting members separately would gain nothing.
   const view = useView(member => member)
@@ -770,6 +774,7 @@ export function NewConversationComposer({ useView, actions }: NewConversationPan
    * message at all. Text-only pending requests are included for that reason.
    */
   const pasteLocked = locked || pending
+  const completion = useDraftCompletion(view, actions, editor, pasteLocked, legacy)
   /**
    * The visible images cannot be REMOVED while the frozen request carried
    * images: that retry resends the images it froze, and an edit here would
@@ -873,18 +878,28 @@ export function NewConversationComposer({ useView, actions }: NewConversationPan
             {imageFailureCopy(copy, imageFailure)}
           </p>
         )}
+        {completion.menu}
         <textarea
           ref={editor}
           rows={2}
           className="zr-newc-text"
           data-zen-remote="new-conversation-text"
           aria-label={copy.title}
+          aria-autocomplete="list"
+          aria-controls={completion.listId}
+          aria-activedescendant={completion.activeId}
           placeholder={ready ? copy.writeOrPasteFirst : copy.pickHostFirst}
           value={text}
           disabled={locked}
+          onFocus={event => { completion.readCaret(event.currentTarget) }}
+          onSelect={event => { completion.readCaret(event.currentTarget) }}
+          onBlur={completion.onBlur}
+          onCompositionStart={completion.onCompositionStart}
+          onCompositionEnd={event => { completion.onCompositionEnd(event.currentTarget) }}
           onChange={(event) => {
             setFailure(null)
             actions.onTextChange(event.currentTarget.value)
+            completion.readCaret(event.currentTarget)
           }}
           onPaste={(event) => {
             const transfer = event.clipboardData
@@ -913,7 +928,13 @@ export function NewConversationComposer({ useView, actions }: NewConversationPan
           onKeyDown={(event) => {
             // Enter activates send, Shift+Enter inserts a line break, and IME Enter commits the candidate.
             const composing = composition.current?.guards(event.nativeEvent) ?? event.nativeEvent.isComposing
-            if (event.key !== 'Enter' || event.shiftKey || composing) return
+            if (composing) return
+            if (completion.onKeyDown(event)) {
+              event.preventDefault()
+              event.stopPropagation()
+              return
+            }
+            if (event.key !== 'Enter' || event.shiftKey) return
             event.preventDefault()
             activate()
           }}
@@ -1016,7 +1037,7 @@ export function NewConversationPanel(props: NewConversationPanelProps) {
         <h2 id={titleId} className="zr-newc-title">{copy.title}</h2>
         <div className="zr-newc-target"><NewConversationTarget {...props} /></div>
       </header>
-      <NewConversationComposer {...props} />
+      <NewConversationComposer {...props} legacy />
     </section>
   )
 }

@@ -54,6 +54,7 @@ import { createShareStore } from './share-store.js'
 import { createRelayPool } from './relay-pool.js'
 import { ensurePeerIdentity, readPeerNetwork } from './state-store.js'
 import { NewConversationHost, NewConversationError, isManagedConversation, parseNewConversationRequest, saveRecentConversationHost } from './new-conversation/index.js'
+import { createDraftFileCandidates } from './new-conversation/draft-file-candidates.js'
 import { createNewConversationRoute, NEW_CONVERSATION_ROUTE } from './new-conversation-routes.js'
 import type { RelayPool } from './relay-pool.js'
 import { createPeerEngine } from './peer/engine.js'
@@ -867,10 +868,14 @@ export function apply(ctx: Context, config: MobileNavConfig = {}): void {
    * historic owner of the stop — never fires). */
   const cliManagedChildren: Array<{ stop(): void }> = []
   const home = process.env.DSH_HOME ?? join(homedir(), '.dsh')
+  const getHostService = (name: string) => (ctx.root as unknown as { reflect?: { get(key: string): unknown } }).reflect?.get(name)
   const newConversation = new NewConversationHost({
-    get: name => (ctx.root as unknown as { reflect?: { get(key: string): unknown } }).reflect?.get(name),
+    get: getHostService,
     journalDirectory: join(home, 'zen-remote-new-conversations'),
   })
+  const listDraftFileCandidates = createDraftFileCandidates(
+    () => getHostService('workspaceRegistry') as ReturnType<Parameters<typeof createDraftFileCandidates>[0]>,
+  )
   let publishNewRemoteSession = (_sessionId: string): void => {}
   let submitLocalConversation: Parameters<typeof createNewConversationRoute>[0]['submitLocal'] =
     request => newConversation.submit('local-owner', request)
@@ -887,6 +892,7 @@ export function apply(ctx: Context, config: MobileNavConfig = {}): void {
         },
         saveRecentHost: hostId => saveRecentConversationHost(ctx as unknown as Parameters<typeof saveRecentConversationHost>[0], hostId),
         submitLocal: request => submitLocalConversation(request),
+        listLocalDraftFileCandidates: listDraftFileCandidates,
         onRemoteCreated: sessionId => publishNewRemoteSession(sessionId),
       }),
     }), 'dsh-zen-remote: new conversation')
@@ -1503,6 +1509,7 @@ export function apply(ctx: Context, config: MobileNavConfig = {}): void {
             const picker = relayCtx.reflect.get('directoryPicker') as { capability(): { kind: string } } | undefined
             return picker?.capability().kind === 'browse'
           },
+          listDraftFileCandidates,
           createWithFirstMessage(device, incoming, authorize) {
             const request = parseNewConversationRequest(incoming)
             return newConversation.submit(`paired-device:${device}`, request, {

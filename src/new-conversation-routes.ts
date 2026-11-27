@@ -3,6 +3,10 @@ import type { AdminAdmission } from './admin-routes.js'
 import { ClientRouteError, requireSessionHostRelay } from './client-routes.js'
 import { responseJson, sameOriginPost } from './http.js'
 import { NewConversationError, parseNewConversationRequest, type NewConversationRequest } from './new-conversation/index.js'
+import {
+  DRAFT_FILE_CANDIDATES_METHOD, draftFileCandidateRows, draftFileCandidatesUnsupported, parseDraftFileCandidatesRequest,
+  type ListDraftFileCandidates,
+} from './new-conversation/draft-file-candidates.js'
 import type { RelayPool } from './relay-pool.js'
 import { RelayError } from './relay-client.js'
 import { SESSION_REFERENCE_URI, decodeSessionReferenceUri, encodeSessionReferenceUri } from './session-reference.js'
@@ -17,6 +21,7 @@ interface Options {
   getRecentHost(): string
   saveRecentHost(hostId: string): Promise<void>
   submitLocal(request: NewConversationRequest): Promise<{ sessionId: string }>
+  listLocalDraftFileCandidates: ListDraftFileCandidates
   onRemoteCreated(sessionId: string): void
 }
 
@@ -68,6 +73,36 @@ async function submitRemote(options: Options, hostId: string, request: NewConver
   return { sessionId }
 }
 
+async function listDraftFileCandidates(options: Options, hostId: string, input: unknown, res: ServerResponse): Promise<void> {
+  const request = parseDraftFileCandidatesRequest(input)
+  const controller = new AbortController()
+  const onClose = () => { if (!res.writableEnded) controller.abort() }
+  res.once('close', onClose)
+  if (res.destroyed) onClose()
+  const { signal } = controller
+  try {
+    signal.throwIfAborted()
+    let value: unknown
+    if (hostId === 'local') {
+      value = await options.listLocalDraftFileCandidates(request, signal)
+    } else {
+      const relay = requireSessionHostRelay(options.getPool(), hostId)
+      try {
+        value = await relay.invoke('session', DRAFT_FILE_CANDIDATES_METHOD, { request }, signal)
+      } catch (error) {
+        // Older Hosts return the unregistered-method refusal for this dedicated invoke.
+        if (error instanceof RelayError && (error.code === 'forbidden-method' || error.code === 'unsupported')) {
+          throw draftFileCandidatesUnsupported(error)
+        }
+        throw error
+      }
+    }
+    if (!signal.aborted) responseJson(res, 200, { ok: true, value: draftFileCandidateRows(value) })
+  } finally {
+    res.off('close', onClose)
+  }
+}
+
 export function createNewConversationRoute(options: Options) {
   return async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const admission = options.admit(req)
@@ -86,9 +121,14 @@ export function createNewConversationRoute(options: Options) {
       return
     }
     try {
-      const { hostId, request: incoming, ...rest } = await bodyOf(req)
-      if (typeof hostId !== 'string' || !/^(?:local|[a-f0-9]{8})$/u.test(hostId) || Object.keys(rest).length !== 0) {
-        throw new NewConversationError(400, 'bad-request', 'Select the conversation Host')
+      const { hostId, request: incoming, fileCandidates, ...rest } = await bodyOf(req)
+      if (typeof hostId !== 'string' || !/^(?:local|[a-f0-9]{8})$/u.test(hostId) || Object.keys(rest).length !== 0
+        || (incoming !== undefined && fileCandidates !== undefined)) {
+        throw new NewConversationError(400, 'bad-request', 'Select the conversation Host and one draft operation')
+      }
+      if (fileCandidates !== undefined) {
+        await listDraftFileCandidates(options, hostId, fileCandidates, res)
+        return
       }
       const request = parseNewConversationRequest(incoming)
       const value = hostId === 'local'
@@ -98,6 +138,7 @@ export function createNewConversationRoute(options: Options) {
       try { await options.saveRecentHost(hostId) } catch { preferenceSaved = false }
       responseJson(res, 200, { ok: true, value: { ...value, preferenceSaved } })
     } catch (error) {
+      if (res.destroyed) return
       if (error instanceof NewConversationError || error instanceof ClientRouteError) {
         responseJson(res, error.status, { ok: false, error: { code: error.code } })
       } else if (error instanceof RelayError) {

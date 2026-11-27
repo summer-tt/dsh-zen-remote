@@ -26,6 +26,7 @@
  * a 404.
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { type ListDraftFileCandidates } from './new-conversation/draft-file-candidates.js';
 import type { ShareStore } from './share-store.js';
 import type { ServerPluginEntry, BridgeRegistry } from './plugin-bridge.js';
 import { type PluginTunnelRoutes } from './plugin-tunnel.js';
@@ -145,6 +146,8 @@ export interface RelayHandlerOptions {
     createWithFirstMessage?: (device: string, request: unknown, authorize: () => void) => Promise<{
         sessionId: string;
     }>;
+    /** List read-only Workspace paths on behalf of an authenticated paired device. */
+    listDraftFileCandidates?: ListDraftFileCandidates;
     /** Ancestor lookup for subagent reachability; defaults to "no parent". */
     parentOf?: (id: string) => string | undefined;
     /** The host's `/api` shared-fetch dispatcher (T41b), probed lazily per

@@ -17,6 +17,8 @@ import {
   submitBlockOf,
 } from '../src/client/new-conversation/target.ts'
 import { createDraftStore } from '../src/client/new-conversation/draft-store.ts'
+import { draftCompletionSessions } from '../src/client/new-conversation/completion-sessions.ts'
+import { detectDraftCompletion, formatDraftFileMention, formatDraftSessionMention, replaceDraftCompletion } from '../src/client/new-conversation/completion.ts'
 import { createDraftImageStore } from '../src/client/new-conversation/draft-images.ts'
 import { MAX_DRAFT_IMAGE_BYTES } from '../src/upload-limits.ts'
 import { registerNewConversation } from '../src/client/new-conversation/register.ts'
@@ -249,6 +251,77 @@ test('image-only drafts can send and only image drafts require remote image supp
   assert.equal(submitBlockOf(readyGate({ imagesUnavailable: true })), undefined)
   assert.equal(submitActivation('', { ...imageOnly, imagesUnavailable: true, pendingSubmission: true }), 'resume')
   assert.equal(submitActivation('/model', { ...imageOnly, text: '/model' }), 'open-model-picker')
+})
+
+test('draft completion uses native slash, URL, email and quoted reference boundaries at the caret', () => {
+  assert.deepEqual(detectDraftCompletion('text /mo tail', 8), {
+    trigger: '/', query: 'mo', quoted: false, position: 'inline', span: { start: 5, end: 8 },
+  })
+  assert.deepEqual(detectDraftCompletion('  /', 3), {
+    trigger: '/', query: '', quoted: false, position: 'leading', span: { start: 2, end: 3 },
+  })
+  for (const ordinary of ['a@b.example', 'https://example.com/a', 'folder/file', '中文/路径']) {
+    assert.equal(detectDraftCompletion(ordinary, ordinary.length), null)
+  }
+  const quoted = 'see @"project dir/nest'
+  assert.deepEqual(detectDraftCompletion(quoted, quoted.length), {
+    trigger: '@', query: 'project dir/nest', quoted: true, position: 'inline', span: { start: 4, end: quoted.length },
+  })
+})
+
+test('draft completion replaces only the trigger span with native path and Session reference text', () => {
+  const text = 'see @fo later'
+  const token = detectDraftCompletion(text, 7)
+  const folder = { path: 'folder name', kind: 'directory' }
+  assert.equal(formatDraftFileMention(folder, false, true), '@"folder name/')
+  assert.equal(formatDraftFileMention(folder, false), '@"folder name/"')
+  assert.equal(formatDraftFileMention({ path: 'cannot"quote', kind: 'file' }, false), undefined)
+  assert.deepEqual(replaceDraftCompletion(text, token, formatDraftFileMention(folder, false), true), {
+    text: 'see @"folder name/" later', caret: 19,
+  })
+  const oldPath = 'see @"docs/old path.md" later'
+  assert.deepEqual(replaceDraftCompletion(oldPath, detectDraftCompletion(oldPath, 11), '@"docs/new path.md"', true), {
+    text: 'see @"docs/new path.md" later', caret: 23,
+  })
+  assert.deepEqual(replaceDraftCompletion('@README.md later', detectDraftCompletion('@README.md later', 4), '@NOTES.md', true), {
+    text: '@NOTES.md later', caret: 9,
+  })
+  const punctuation = 'read @README.md, please'
+  assert.equal(replaceDraftCompletion(punctuation, detectDraftCompletion(punctuation, 9), '@NOTES.md', true).text,
+    'read @NOTES.md, please')
+  assert.equal(detectDraftCompletion('@"README.md"', 12), null)
+  assert.equal(replaceDraftCompletion('/model', detectDraftCompletion('/model', 3), '').text, '')
+  const session = { id: 'session-中文', label: 'Name]\\test' }
+  const payload = Buffer.from(JSON.stringify(session.id)).toString('base64url')
+  const mention = formatDraftSessionMention(session)
+  assert.equal(mention, `@[Name\\]\\\\test](dsh-session:${payload})`)
+  assert.equal(detectDraftCompletion(mention, mention.length), null)
+  assert.deepEqual(replaceDraftCompletion('text /mo tail', detectDraftCompletion('text /mo tail', 8), ''), {
+    text: 'text  tail', caret: 5,
+  })
+})
+
+test('draft Session candidates refresh from the selected local workspace and exclude other Hosts', () => {
+  const local = { hostId: LOCAL_HOST, workspaceId: 'w1' }
+  const remote = 'zr~aaaaaaaa~remote-1'
+  const workspaces = [
+    { workspaceId: 'w1', sessionIds: ['owner', 'blank', 'archived', 'child', remote, 'missing', 'older'] },
+    { workspaceId: 'w2', sessionIds: ['other'] },
+  ]
+  const row = (id, fields = {}) => ({ id, cwd: '/work', updatedAt: 2, ...fields })
+  const sessions = {
+    owner: row('owner', { displayTitle: 'Workspace session', updatedAt: 11 }),
+    blank: row('blank', { blank: true }), archived: row('archived'), child: row('child', { origin: 'subagent' }), [remote]: row(remote),
+    older: row('older'), other: row('other'),
+  }
+  assert.deepEqual(draftCompletionSessions(local, workspaces, sessions, ['archived']).map(row => [row.id, row.label]), [
+    ['owner', 'Workspace session'], ['older', 'older'],
+  ])
+  sessions.owner = row('owner', { title: 'Renamed', updatedAt: 11 })
+  assert.equal(draftCompletionSessions(local, workspaces, sessions, ['archived'])[0].label, 'Renamed')
+  assert.deepEqual(draftCompletionSessions({ ...local, workspaceId: 'w2' }, workspaces, sessions, []).map(row => row.id), ['other'])
+  assert.deepEqual(draftCompletionSessions({ ...local, hostId: HOST_A.hostId }, workspaces, sessions, []), [])
+  assert.deepEqual(draftCompletionSessions({ ...local, workspaceId: undefined }, workspaces, sessions, []), [])
 })
 
 // ---------------------------------------------------------------- target keys
