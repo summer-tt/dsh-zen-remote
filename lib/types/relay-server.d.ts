@@ -139,6 +139,8 @@ export interface RelayHandlerOptions {
     gateway: RelayGateway;
     /** Handshake facts. */
     serverInfo: RelayServerInfo;
+    /** Whether the current Host composition can browse directories for Workspace adoption. */
+    supportsWorkspaceAdd?: () => boolean;
     /** Create and submit on behalf of an authenticated paired device. */
     createWithFirstMessage?: (device: string, request: unknown, authorize: () => void) => Promise<{
         sessionId: string;

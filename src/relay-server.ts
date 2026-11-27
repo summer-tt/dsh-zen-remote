@@ -281,6 +281,8 @@ export interface RelayHandlerOptions {
   gateway: RelayGateway
   /** Handshake facts. */
   serverInfo: RelayServerInfo
+  /** Whether the current Host composition can browse directories for Workspace adoption. */
+  supportsWorkspaceAdd?: () => boolean
   /** Create and submit on behalf of an authenticated paired device. */
   createWithFirstMessage?: (device: string, request: unknown, authorize: () => void) => Promise<{ sessionId: string }>
   /** Ancestor lookup for subagent reachability; defaults to "no parent". */
@@ -1745,6 +1747,7 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
         serverName: serverInfo.serverName(),
         dshVersion: serverInfo.dshVersion,
         ...(options.createWithFirstMessage === undefined ? {} : { supportsCreateDraft: true }),
+        ...(options.supportsWorkspaceAdd?.() === true ? { supportsWorkspaceAdd: true } : {}),
         // T42: the server's own interface fingerprints (empty when the wiring
         // had nothing to compute — the client judges group by group).
         fingerprints,

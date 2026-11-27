@@ -20,10 +20,11 @@
  * view on a locale switch), so this module carries no locale import and a
  * Node test can drive it with plain strings.
  */
-import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
 import type { DraftSlotProps, NativeDraftPreset, NativeWorkspaceControl } from './register.ts'
 import { fromVirtual } from '../../virtual-id.js'
-import { Button, Menu, observeComposition, type MenuEntry } from '@deepseek-ai/dsh-client-ui-primitives'
+import { RemoteWorkspaceDialog, remoteWorkspaceCopy, type RemoteWorkspaceActions } from './RemoteWorkspaceDialog.tsx'
+import { Button, IconFolderCloseRegular, IconPlusOutlineRegular, Menu, observeComposition, type MenuEntry } from '@deepseek-ai/dsh-client-ui-primitives'
 import {
   isBareModelCommand, LOCAL_HOST, submitActivation, submitBlockOf,
   type DraftTargetState, type HostDirectorySnapshot, type HostId,
@@ -46,6 +47,7 @@ export interface WorkspaceOption {
   readonly displayId?: string
   /** Display title. */
   readonly label: string
+  readonly path?: string
 }
 
 /**
@@ -125,6 +127,7 @@ export interface NewConversationView {
   /** Why the roster failed, when it did; shown with the retry action. */
   readonly directoryError: string | undefined
   readonly workspaces: readonly WorkspaceOption[]
+  readonly canAddRemoteWorkspace?: boolean
   readonly presets?: readonly { id: string; label: string; name?: string; description?: string }[]
   readonly agentPreset?: string | undefined
   /** The current target's draft text. */
@@ -172,6 +175,7 @@ export interface NewConversationPanelActions {
   readonly onOpenHostDraft?: (hostId: HostId) => void
   readonly onReturnToSession?: () => void
   readonly onSelectWorkspace: (workspaceId: WorkspaceId) => void
+  readonly remoteWorkspace?: (hostId: HostId, generation: number) => RemoteWorkspaceActions
   readonly onSelectPreset?: (id: string) => void
   readonly onTextChange: (text: string) => void
   /**
@@ -250,30 +254,37 @@ function Picker(props: {
   readonly onToggle: () => void
   readonly onClose: () => void
   readonly items: readonly MenuEntry[]
+  readonly footer?: readonly MenuEntry[]
+  readonly opensDialog?: boolean
+  readonly triggerRef?: RefObject<HTMLButtonElement>
   readonly selectedId: string | undefined
   readonly onSelect: (id: string) => void
   readonly disabled: boolean
 }) {
+  const trigger = (
+    <button
+      ref={props.triggerRef}
+      type="button"
+      className="zr-newc-picker"
+      data-zen-remote="new-conversation-picker"
+      aria-label={props.ariaLabel}
+      aria-haspopup={props.opensDialog ? 'dialog' : 'menu'}
+      aria-expanded={props.opensDialog ? undefined : props.open}
+      disabled={props.disabled}
+      onClick={props.onToggle}
+    >
+      {props.opensDialog ? <IconPlusOutlineRegular size={16} /> : props.kind === 'workspace' ? <IconFolderCloseRegular size={16} /> : <TargetIcon kind={props.kind} />}
+      <span className="zr-newc-pickerLabel">{props.label}</span>
+      {!props.opensDialog && <Chevron />}
+    </button>
+  )
+  if (props.opensDialog) return trigger
   return (
     <Menu
       open={props.open}
-      anchor={(
-        <button
-          type="button"
-          className="zr-newc-picker"
-          data-zen-remote="new-conversation-picker"
-          aria-label={props.ariaLabel}
-          aria-haspopup="menu"
-          aria-expanded={props.open}
-          disabled={props.disabled}
-          onClick={props.onToggle}
-        >
-          <TargetIcon kind={props.kind} />
-          <span className="zr-newc-pickerLabel">{props.label}</span>
-          <Chevron />
-        </button>
-      )}
+      anchor={trigger}
       items={props.items}
+      {...(props.footer === undefined ? {} : { footer: props.footer })}
       selectedId={props.selectedId}
       onSelect={props.onSelect}
       onClose={props.onClose}
@@ -286,11 +297,10 @@ function Chevron() {
   return <svg width="12" height="12" viewBox="0 0 16 16" aria-hidden><path d="m4 6 4 4 4-4" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>
 }
 
-function TargetIcon({ kind }: { kind: 'host' | 'workspace' | 'preset' }) {
+function TargetIcon({ kind }: { kind: 'host' | 'preset' }) {
   return (
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.25" strokeLinejoin="round" aria-hidden>
       {kind === 'host' && <path d="M2 3h12v8H2zM6 14h4m-2-3v3" />}
-      {kind === 'workspace' && <path d="M1.5 4h5l2 2h6l-1.5 7h-11z" />}
       {kind === 'preset' && <><path d="m8 3 5 9H3z" /><circle cx="8" cy="3" r="1.5" fill="var(--dsw-alias-bg-base)" /><circle cx="3" cy="12" r="1.5" fill="var(--dsw-alias-bg-base)" /><circle cx="13" cy="12" r="1.5" fill="var(--dsw-alias-bg-base)" /></>}
     </svg>
   )
@@ -323,16 +333,86 @@ function HostPicker({ copy, directory, hostId, onSelect }: {
   />
 }
 
+function workspacePathSuffix(path: string, paths: readonly string[]): string {
+  const segments = path.split(/([\\/])/u)
+  const peers = paths.filter(peer => peer !== path)
+  for (let count = 1; count < segments.length; count += 2) {
+    const suffix = segments.slice(-count).join('')
+    if (suffix !== '' && peers.every(peer => peer !== suffix && !peer.endsWith(`/${suffix}`) && !peer.endsWith(`\\${suffix}`))) return suffix
+  }
+  return path
+}
+
+function DraftWorkspacePicker({ view, actions }: { view: NewConversationView; actions: NewConversationPanelActions }) {
+  const { target, directory, workspaces, copy, canAddRemoteWorkspace } = view
+  const { hostId, generation } = target
+  const [open, setOpen] = useState(false)
+  const [adding, setAdding] = useState(false)
+  const trigger = useRef<HTMLButtonElement>(null)
+  const restoreFocus = useRef(false)
+  useLayoutEffect(() => {
+    if (adding || !restoreFocus.current) return
+    restoreFocus.current = false
+    trigger.current?.focus()
+  }, [adding])
+  const openAdd = () => { restoreFocus.current = true; setAdding(true) }
+  const remote = useMemo(() => actions.remoteWorkspace?.(hostId, generation), [actions, hostId, generation])
+  const canAdd = remote !== undefined && canAddRemoteWorkspace === true
+  const zh = copy.title === '新会话'
+  const words = remoteWorkspaceCopy(zh)
+  const addId = '::add-workspace'
+  const pathsByTitle = new Map<string, string[]>()
+  for (const { label, path } of workspaces) {
+    if (path === undefined) continue
+    const paths = pathsByTitle.get(label) ?? []
+    paths.push(path)
+    pathsByTitle.set(label, paths)
+  }
+  const items: MenuEntry[] = workspaces.map(({ workspaceId, label, path }) => {
+    const paths = pathsByTitle.get(label) ?? []
+    const suffix = path === undefined || paths.length < 2 ? undefined : workspacePathSuffix(path, paths)
+    return {
+      id: workspaceId,
+      label: suffix === undefined ? label : <span className="zr-newc-workspaceOption" title={path}>
+        <span>{label}</span>{' '}<small>{suffix}</small>
+      </span>,
+      icon: <IconFolderCloseRegular size={16} />,
+    }
+  })
+  const openDialogDirectly = items.length === 0 && canAdd
+  const selected = workspaces.find(workspace => workspace.workspaceId === target.workspaceId)
+  return <>
+    <Picker
+      kind="workspace"
+      label={openDialogDirectly ? words.menuAdd : selected?.label ?? (items.length === 0 ? copy.noWorkspaces : copy.chooseWorkspace)}
+      ariaLabel={openDialogDirectly ? words.menuAdd : copy.ariaWorkspacePicker}
+      opensDialog={openDialogDirectly}
+      open={open}
+      triggerRef={trigger}
+      onToggle={() => { if (openDialogDirectly) openAdd(); else setOpen(value => !value) }}
+      onClose={() => setOpen(false)}
+      items={items}
+      footer={canAdd ? [{ id: addId, label: words.menuAdd, icon: <IconPlusOutlineRegular size={16} /> }] : []}
+      selectedId={target.workspaceId}
+      onSelect={id => {
+        setOpen(false)
+        if (id === addId) openAdd()
+        else if (id !== target.workspaceId) actions.onSelectWorkspace(id)
+      }}
+      disabled={directory.phase !== 'ready' || (items.length === 0 && !canAdd)}
+    />
+    {adding && remote !== undefined && <RemoteWorkspaceDialog
+      host={hostName(copy, directory, hostId)} zh={zh} actions={remote} available={canAdd} onClose={() => setAdding(false)}
+    />}
+  </>
+}
+
 /** Host and workspace selection for the native hero row. */
 export function NewConversationTarget({ useView, actions, renderWorkspace, renderDraftPreset }: NewConversationPanelProps & { renderWorkspace?: NativeWorkspaceControl; renderDraftPreset?: NativeDraftPreset }) {
-  const { target, directory, workspaces, presets, agentPreset, copy, returnSessionId } = useView(state => state)
-  const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false)
+  const view = useView(state => state)
+  const { target, directory, workspaces, presets, agentPreset, copy, returnSessionId } = view
   const [presetMenuOpen, setPresetMenuOpen] = useState(false)
   const mode = copy.title === '新会话' ? '模式' : 'Mode'
-  const workspaceItems: MenuEntry[] = workspaces.map(workspace => ({
-    id: workspace.workspaceId,
-    label: workspace.label,
-  }))
   const selectedWorkspace = workspaces.find(workspace => workspace.workspaceId === target.workspaceId)
   const fallbackPreset = presets !== undefined && (
     <Picker
@@ -354,32 +434,18 @@ export function NewConversationTarget({ useView, actions, renderWorkspace, rende
       {returnSessionId !== undefined && <Button variant="outline" size="sm" onClick={actions.onReturnToSession}>
         {copy.title === '新会话' ? '返回原会话' : 'Return to previous session'}
       </Button>}
-      {renderWorkspace !== undefined ? renderWorkspace({
+      {target.hostId === LOCAL_HOST && renderWorkspace !== undefined ? renderWorkspace({
         label: selectedWorkspace?.label,
         selectedId: selectedWorkspace?.displayId,
         filterWorkspace: id => (fromVirtual(id)?.serverId ?? LOCAL_HOST) === target.hostId,
         workspaceTitle: (id, title) => workspaces.find(workspace => workspace.displayId === id)?.label ?? title,
-        allowAddWorkspace: target.hostId === LOCAL_HOST,
+        allowAddWorkspace: true,
         onPick: id => {
           const origin = fromVirtual(id)
           if ((origin?.serverId ?? LOCAL_HOST) !== target.hostId) return
           actions.onSelectWorkspace(origin === undefined ? id : origin.id.replace(/^#\d+~/u, ''))
         },
-      }) : <Picker
-        kind="workspace"
-        label={selectedWorkspace?.label ?? (workspaces.length === 0 ? copy.noWorkspaces : copy.chooseWorkspace)}
-        ariaLabel={copy.ariaWorkspacePicker}
-        open={workspaceMenuOpen}
-        onToggle={() => { setWorkspaceMenuOpen(open => !open) }}
-        onClose={() => { setWorkspaceMenuOpen(false) }}
-        items={workspaceItems}
-        selectedId={target.workspaceId}
-        onSelect={(id) => {
-          setWorkspaceMenuOpen(false)
-          if (id !== target.workspaceId) actions.onSelectWorkspace(id as WorkspaceId)
-        }}
-        disabled={directory.phase !== 'ready' || workspaces.length === 0}
-      />}
+      }) : <DraftWorkspacePicker key={target.hostId} view={view} actions={actions} />}
       {renderDraftPreset === undefined ? fallbackPreset : renderDraftPreset({
         options: presets ?? [],
         selectedId: agentPreset,

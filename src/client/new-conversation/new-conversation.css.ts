@@ -76,6 +76,38 @@ export const NEW_CONVERSATION_CSS = `
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.zr-newc-directoryModal[role="dialog"] { width: min(520px, 100%); max-height: 100%; }
+.zr-newc-directoryContent { min-height: 0; overflow: auto; }
+.zr-newc-directoryModal > :last-child { flex-shrink: 0; }
+.zr-newc-workspaceOption { display: flex; min-width: 0; gap: 4px; }
+.zr-newc-workspaceOption > * { overflow: hidden; text-overflow: ellipsis; }
+.zr-newc-workspaceOption small { max-width: 65%; flex-shrink: 0; color: var(--dsw-alias-label-secondary); }
+.zr-newc-directory, .zr-newc-directory form {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.zr-newc-directoryForm, .zr-newc-directoryCrumbs, .zr-newc-directoryTools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.zr-newc-directoryForm > :first-child { flex: 1; min-width: 0; }
+.zr-newc-directoryCrumbs { overflow-x: auto; }
+.zr-newc-directoryCrumbs > button { flex-shrink: 0; }
+.zr-newc-directoryEntries {
+  display: grid;
+  align-content: start;
+  max-height: min(30vh, 224px);
+  overflow: auto;
+  padding: 4px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-sm);
+}
+.zr-newc-directoryEntries button { justify-content: flex-start; overflow-wrap: anywhere; }
+.zr-newc-directoryTools { flex-wrap: wrap; justify-content: space-between; }
+.zr-newc-directory p { margin: 0; color: var(--dsw-alias-label-secondary); }
+.zr-newc-directory [role="alert"] { color: var(--dsw-alias-state-error-primary); }
 .zr-newc-composer { padding: 0 var(--dsh-composer-side-clearance, 16px); min-width: 0; }
 .zr-newc[data-zen-remote="new-conversation"] .zr-newc-composer {
   width: min(100%, 720px);

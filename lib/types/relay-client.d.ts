@@ -100,6 +100,7 @@ export interface RelayHandshake {
     fingerprints: Record<string, string>;
     /** The target can create a Session and accept the initial message in one operation. */
     supportsCreateDraft?: true;
+    supportsWorkspaceAdd?: true;
     /**
      * The SERVER's record of THIS device's name (T59) — what the pairing
      * registered and renames have since made of it. `undefined` from an older

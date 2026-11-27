@@ -22,6 +22,7 @@
  */
 import { type ReactNode } from 'react';
 import type { DraftSlotProps, NativeDraftPreset, NativeWorkspaceControl } from './register.ts';
+import { type RemoteWorkspaceActions } from './RemoteWorkspaceDialog.tsx';
 import { type DraftTargetState, type HostDirectorySnapshot, type HostId, type WorkspaceId } from './target.ts';
 /** The model a draft will start with, resolved by the user before the first send. */
 export interface ModelSelection {
@@ -38,6 +39,7 @@ export interface WorkspaceOption {
     readonly displayId?: string;
     /** Display title. */
     readonly label: string;
+    readonly path?: string;
 }
 /**
  * What one submit asks for. A fresh send carries the full snapshot the
@@ -118,6 +120,7 @@ export interface NewConversationView {
     /** Why the roster failed, when it did; shown with the retry action. */
     readonly directoryError: string | undefined;
     readonly workspaces: readonly WorkspaceOption[];
+    readonly canAddRemoteWorkspace?: boolean;
     readonly presets?: readonly {
         id: string;
         label: string;
@@ -167,6 +170,7 @@ export interface NewConversationPanelActions {
     readonly onOpenHostDraft?: (hostId: HostId) => void;
     readonly onReturnToSession?: () => void;
     readonly onSelectWorkspace: (workspaceId: WorkspaceId) => void;
+    readonly remoteWorkspace?: (hostId: HostId, generation: number) => RemoteWorkspaceActions;
     readonly onSelectPreset?: (id: string) => void;
     readonly onTextChange: (text: string) => void;
     /**

@@ -58,6 +58,7 @@ import { MAX_PAIRED_SERVERS } from './relay-pool.js'
 import type { RelayPool, RelayPoolEntryView } from './relay-pool.js'
 import { resolveDshVersion } from './relay-server.js'
 import { fromVirtual } from './virtual-id.js'
+import type { WorkspaceHostOperation } from './client-data/workspace-host.js'
 
 /** Prefix all client routes live under (one webServer prefix registration). */
 export const CLIENT_ROUTE_PREFIX = '/_dsh/zen-remote/client'
@@ -70,6 +71,7 @@ export interface SessionHostSummary {
   displayName: string
   state: RelayClient['state']
   supportsCreateDraft?: true
+  supportsWorkspaceAdd?: true
 }
 
 /** POST `{serverUrl, code, name}`: redeem a desktop pairing code. */
@@ -404,8 +406,37 @@ export type SessionHostLocator = { hostId: string; sessionId?: never } | { hostI
 export type SessionHostOperation =
   | ({ operation: 'modelCatalog' | 'getFavorites' } & SessionHostLocator)
   | { operation: 'agentPresets'; hostId: string }
+  | WorkspaceHostOperation
   | ({ operation: 'setFavorite' } & SessionHostLocator & FavoriteUpdate)
   | { operation: 'selectModel'; sessionId: string; provider: string; model: string; reasoningEffort?: string }
+
+function invokeWorkspaceHost(
+  relay: RelayClient,
+  operation: WorkspaceHostOperation['operation'],
+  input: Record<string, unknown>,
+  signal: AbortSignal,
+): Promise<unknown> {
+  if (relay.handshakeInfo?.supportsWorkspaceAdd !== true) {
+    throw new ClientRouteError(409, 'remote-unsupported', 'The selected Host does not support adding workspaces')
+  }
+  const { path, ...remaining } = input
+  const validPath = typeof path === 'string' && path.trim() !== '' && !path.includes('\0')
+  if (!validPath && !(operation === 'listDirectories' && path === undefined)) {
+    throw new ClientRouteError(400, 'bad-request', 'Provide a directory path')
+  }
+  if (operation === 'createDirectory') {
+    const { name, ...extra } = remaining
+    if (Object.keys(extra).length !== 0 || typeof name !== 'string' || name.trim() === '' ||
+        name === '.' || name === '..' || /[/\\\0]/u.test(name)) {
+      throw new ClientRouteError(400, 'bad-request', 'Provide a single folder name')
+    }
+    return relay.invoke('directoryPicker', 'createDirectory', { path, name }, signal)
+  }
+  if (Object.keys(remaining).length !== 0) throw new ClientRouteError(400, 'bad-request', 'Unexpected operation fields')
+  return operation === 'listDirectories'
+    ? relay.invoke('directoryPicker', 'list', path === undefined ? {} : { path }, signal)
+    : relay.invoke('workspace', 'create', { request: { path } }, signal)
+}
 
 async function requestFavorites(
   relay: RelayClient,
@@ -457,15 +488,16 @@ async function invokeSessionHost(
   signal: AbortSignal,
 ): Promise<unknown> {
   const { operation, hostId, sessionId, ...input } = body
-  if (operation !== 'agentPresets' && operation !== 'modelCatalog' && operation !== 'selectModel' && operation !== 'getFavorites' && operation !== 'setFavorite') {
+  const workspaceOperation = operation === 'listDirectories' || operation === 'createDirectory' || operation === 'createWorkspace'
+  if (!workspaceOperation && operation !== 'agentPresets' && operation !== 'modelCatalog' && operation !== 'selectModel' && operation !== 'getFavorites' && operation !== 'setFavorite') {
     throw new ClientRouteError(400, 'bad-operation', 'Unknown session Host operation')
   }
   const parts = sessionId === undefined ? undefined : fromVirtual(sessionId)
   if (sessionId !== undefined && (parts === undefined || parts.id === '')) {
     throw new ClientRouteError(400, 'not-virtual', 'sessionId must be a virtual session id')
   }
-  if (operation === 'agentPresets' && sessionId !== undefined) {
-    throw new ClientRouteError(400, 'bad-request', 'Agent presets require a Host ID')
+  if ((workspaceOperation || operation === 'agentPresets') && sessionId !== undefined) {
+    throw new ClientRouteError(400, 'bad-request', 'This operation requires a Host ID')
   }
   if ((hostId !== undefined && parts !== undefined) || (operation === 'selectModel' && parts === undefined)) {
     throw new ClientRouteError(400, 'bad-request', 'Specify exactly one target locator. Model selection requires sessionId')
@@ -476,6 +508,7 @@ async function invokeSessionHost(
     throw new ClientRouteError(400, 'bad-request', 'hostId must be a remote serverId')
   }
   const relay = requireSessionHostRelay(options.pool, serverId)
+  if (workspaceOperation) return invokeWorkspaceHost(relay, operation, input, signal)
   if (operation === 'selectModel') {
     const { provider, model, reasoningEffort, ...extra } = input
     if (Object.keys(extra).length !== 0 || typeof provider !== 'string' || provider.trim() === '' || fromVirtual(provider) !== undefined ||
@@ -1151,6 +1184,7 @@ export function createClientHandler(options: ClientHandlerOptions): ClientHandle
               displayName: serverName ? displayName : serverId,
               state: awaitingHandshake ? 'connecting' : client.state,
               ...(client.handshakeInfo?.supportsCreateDraft === true ? { supportsCreateDraft: true } : {}),
+              ...(client.handshakeInfo?.supportsWorkspaceAdd === true ? { supportsWorkspaceAdd: true } : {}),
             })
           }
           responseJson(res, 200, { ok: true, value: hosts })

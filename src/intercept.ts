@@ -288,6 +288,10 @@ export const CLIENT_METHOD_FIELDS: Readonly<Record<string, readonly SessionField
   'session/search': [],
   'agentPresets/list': [],
   'agentPresets/read': [],
+  // These methods use the explicit session-host route for remote drafts.
+  'directoryPicker/list': [],
+  'directoryPicker/createDirectory': [],
+  'workspace/create': [],
   // workspace — the global follow stream, merged like the two session/* reads
   'workspace/follow': [],
   // forgePanel — 35 session-scoped endpoints (top-level sessionId) + 1 global stream
@@ -435,6 +439,7 @@ export const REMOTE_READ_METHODS: ReadonlySet<string> = new Set([
   'toolResults/watch',
   'commands/list',
   'sessionReferenceResolver/candidates',
+  'directoryPicker/list',
   'workspaceFiles/list',
   'workspaceFiles/changes',
   'workspaceFiles/read',

@@ -940,6 +940,8 @@ test('T34-fix: every client-table method classifies read or write; the T31 write
     'job/kill',
     'messageFeedback/put',
     'messageFeedback/delete',
+    'directoryPicker/createDirectory',
+    'workspace/create',
     'workspace/pinSession',
     'workspace/unpinSession',
     'workspace/archiveSession',

@@ -4,6 +4,8 @@ import { fromVirtual } from '../virtual-id.js'
 import { DraftTarget, draftKey, hostSelectable, type HostDirectorySnapshot, type HostId, type Source } from './new-conversation/target.ts'
 import { browserDraftStorage, createDraftStore } from './new-conversation/draft-store.ts'
 import { NativeDraftComposer, NativeDraftTarget, NewConversationPanel, type ModelSelection, type NewConversationView, type SubmitInput } from './new-conversation/NewConversationPanel.tsx'
+import type { RemoteDirectoryListing, RemoteWorkspaceActions } from './new-conversation/RemoteWorkspaceDialog.tsx'
+import type { WorkspaceHostOperation } from '../client-data/workspace-host.ts'
 import { NewConversationTrigger } from './new-conversation/NewConversationTrigger.tsx'
 import { NEW_CONVERSATION_PANEL_ID, registerNewConversation, type NativeDraftNavigation } from './new-conversation/register.ts'
 
@@ -11,7 +13,7 @@ const CREATE = '/_dsh/zen-remote/new-conversation'
 const HOSTS = '/_dsh/zen-remote/client/session-hosts'
 const HOST = '/_dsh/zen-remote/client/session-host'
 
-interface HostRow { hostId: string; displayName: string; state: string; supportsCreateDraft?: true }
+interface HostRow { hostId: string; displayName: string; state: string; supportsCreateDraft?: true; supportsWorkspaceAdd?: true }
 interface Favorite { provider: string; model: string }
 interface Preset { id: string; name?: string; description?: string; isDefault?: boolean; broken?: string }
 const modeNames: Record<string, readonly [string, string]> = {
@@ -43,9 +45,9 @@ const rejectedBeforeCreation = new Set([
   'references-require-session', 'workspace-not-found', 'model-unavailable',
 ])
 
-async function call<T>(url: string, input?: unknown): Promise<T> {
+async function call<T>(url: string, input?: unknown, signal?: AbortSignal): Promise<T> {
   const response = await fetch(url, input === undefined ? undefined : {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input),
+    signal: signal ?? null, method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input),
   })
   const data = await response.json() as { ok: true; value: T } | { ok: false; error: { code: string } }
   if (!data.ok) throw new HostRequestError(data.error.code)
@@ -129,19 +131,26 @@ export function mountNewConversation(ctx: ClientContext): ((workspaceId?: string
   let picker: ComponentType<PickerProps> | undefined
   let disposed = false
   const textRevision = new Map<string, number>()
+  // A registration response can arrive ahead of the workspace/follow upsert.
+  let addedWorkspace: { hostId: HostId; workspaceId: string; label: string } | undefined
   const strings = () => copy(document.documentElement.lang.toLowerCase().startsWith('zh'))
   const model = () => selection ?? (catalog?.default != null && matches(catalog, catalog.default) ? catalog.default : null)
 
   const snap = (): NewConversationView => {
     const state = target.state.getSnapshot()
     const words = strings()
-    const workspaces = ctx.workspaces.list.getSnapshot().items.flatMap(row => {
+    const workspaces: NewConversationView['workspaces'][number][] = ctx.workspaces.list.getSnapshot().items.flatMap(row => {
       const ws = hostWorkspace(row.workspaceId)
       const hostName = hosts.find(host => host.hostId === ws.hostId)?.displayName
       const prefix = hostName === undefined ? undefined : `${hostName} · `
       const label = prefix !== undefined && row.title.startsWith(prefix) ? row.title.slice(prefix.length) : row.title
-      return ws.hostId === state.hostId ? [{ workspaceId: ws.workspaceId, displayId: row.workspaceId, label }] : []
+      return ws.hostId === state.hostId ? [{ workspaceId: ws.workspaceId, displayId: row.workspaceId, label, path: row.path }] : []
     })
+    if (addedWorkspace?.hostId === state.hostId && addedWorkspace.workspaceId === state.workspaceId) {
+      const added = addedWorkspace
+      if (workspaces.some(row => row.workspaceId === added.workspaceId)) addedWorkspace = undefined
+      else workspaces.push({ workspaceId: added.workspaceId, label: added.label })
+    }
     const pickerNode = picker === undefined ? createElement('select', {
       'aria-label': words.ariaOpenModelPicker,
       ref: (node: HTMLSelectElement | null) => { nativePicker = node },
@@ -176,7 +185,7 @@ export function mountNewConversation(ctx: ClientContext): ((workspaceId?: string
       ...(row.description === undefined ? {} : { description: row.description }),
     }))
     return { target: state, directory: roster, directoryError: roster.phase === 'error' ? roster.message : undefined,
-      workspaces, presets, agentPreset: chosenPreset ?? presetRows.find(row => row.isDefault)?.id,
+      workspaces, canAddRemoteWorkspace: host?.state === 'online' && host.supportsWorkspaceAdd === true, presets, agentPreset: chosenPreset ?? presetRows.find(row => row.isDefault)?.id,
       text: drafts.read(state.hostId, state.workspaceId), selection: model(), modelPicker: pickerNode,
       copy: { ...words, hostOffline },
       mainSessionId: mainSession(), returnSessionId,
@@ -289,6 +298,32 @@ export function mountNewConversation(ctx: ClientContext): ((workspaceId?: string
     publish()
   }
 
+  function selectWorkspace(id: string) {
+    const current = target.state.getSnapshot()
+    if (current.workspaceId === undefined) drafts.adoptHostDraft(current.hostId, id)
+    target.selectWorkspace(id)
+  }
+
+  function remoteWorkspace(hostId: HostId, generation: number): RemoteWorkspaceActions {
+    const navigationAtOpen = draftNavigation
+    const isCurrent = () => !disposed && isOpen() && draftNavigation === navigationAtOpen &&
+      target.state.getSnapshot().generation === generation && target.state.getSnapshot().hostId === hostId
+    const request = <T,>(operation: WorkspaceHostOperation, signal?: AbortSignal) => {
+      if (!isCurrent()) return Promise.reject(new HostRequestError('draft-changed'))
+      return call<T>(HOST, operation, signal)
+    }
+    return {
+      list: (path, signal) => request<RemoteDirectoryListing>({ operation: 'listDirectories', hostId, ...(path === undefined ? {} : { path }) }, signal),
+      createDirectory: (path, name) => request<string>({ operation: 'createDirectory', hostId, path, name }),
+      async add(path) {
+        const { workspace } = await request<{ workspace: { workspaceId: string; title: string } }>({ operation: 'createWorkspace', hostId, path })
+        if (!isCurrent()) return
+        addedWorkspace = { hostId, workspaceId: workspace.workspaceId, label: workspace.title }
+        selectWorkspace(workspace.workspaceId)
+      },
+    }
+  }
+
   async function submit(input: SubmitInput) {
     const current = target.state.getSnapshot()
     const submittedFrom = draftNavigation
@@ -373,11 +408,8 @@ export function mountNewConversation(ctx: ClientContext): ((workspaceId?: string
       returnSessionId = undefined
       if (id !== undefined && isOpen()) workspace?.openSession(id)
     },
-    onSelectWorkspace: id => {
-      const current = target.state.getSnapshot()
-      if (current.workspaceId === undefined) drafts.adoptHostDraft(current.hostId, id)
-      target.selectWorkspace(id)
-    },
+    onSelectWorkspace: selectWorkspace,
+    remoteWorkspace,
     onSelectPreset: id => {
       if (!presetRows.some(row => row.id === id)) return
       chosenPreset = id

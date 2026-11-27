@@ -2445,6 +2445,42 @@ test('session-host scopes reads and original-provider model selection to one pai
   assert.equal(calls.length, before)
 })
 
+test('session-host sends directory operations only to the selected Host', async (t) => {
+  const calls = []
+  const a = makeEntry('e1', 'abcd1234', gwUrl, 'A', {
+    invoke: () => assert.fail('the other Host must not receive the request'),
+  })
+  const b = makeEntry('e2', 'ffffffff', gwUrl, 'B', {
+    invoke: async (namespace, method, args) => { calls.push({ namespace, method, args }); return {} },
+  })
+  b.client.handshakeInfo.supportsWorkspaceAdd = true
+  const { server, port } = await startClientServer(makeRow(), { pool: fakePool([a, b]) })
+  t.after(() => closeServer(server))
+  const call = async (body, headers = sameOrigin(port)) => {
+    const res = await request(port, {
+      method: 'POST', path: routes.CLIENT_SESSION_HOST_ROUTE, headers, body: { hostId: 'ffffffff', ...body },
+    })
+    return JSON.parse(res.body)
+  }
+  const path = '/remote/test folder'
+  assert.equal((await call({ operation: 'listDirectories' })).ok, true)
+  assert.equal((await call({ operation: 'listDirectories', path })).ok, true)
+  assert.equal((await call({ operation: 'createDirectory', path, name: 'child' })).ok, true)
+  assert.equal((await call({ operation: 'createWorkspace', path })).ok, true)
+  assert.deepEqual(calls, [
+    { namespace: 'directoryPicker', method: 'list', args: {} },
+    { namespace: 'directoryPicker', method: 'list', args: { path } },
+    { namespace: 'directoryPicker', method: 'createDirectory', args: { path, name: 'child' } },
+    { namespace: 'workspace', method: 'create', args: { request: { path } } },
+  ])
+  assert.equal((await call({ operation: 'createDirectory', path, name: '../child' })).error.code, 'bad-request')
+  assert.equal((await call({ operation: 'createWorkspace', path, title: 'unexpected' })).error.code, 'bad-request')
+  assert.equal((await call({ operation: 'listDirectories', sessionId: toVirtual('ffffffff', 'session') })).error.code, 'bad-request')
+  assert.equal((await call({ operation: 'createWorkspace', path }, { 'sec-fetch-site': 'cross-site' })).error.code, 'origin-rejected')
+  assert.equal((await call({ operation: 'listDirectories', hostId: 'abcd1234' })).error.code, 'remote-unsupported')
+  assert.equal(calls.length, 4)
+})
+
 test('session-host favorites forward only the exact registered operation and keep refusals visible', async (t) => {
   const registry = createBridgeRegistry()
   const dispose = registry.register({ plugin: T3_FAVORITES_PLUGIN, version: 'test', routes: [

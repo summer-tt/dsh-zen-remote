@@ -33,6 +33,7 @@ import type { PeerEngine } from './peer/engine.js';
 import type { BridgeRegistry, BridgeStatus, FavoriteUpdate } from './plugin-bridge.js';
 import type { RelayClient } from './relay-client.js';
 import type { RelayPool } from './relay-pool.js';
+import type { WorkspaceHostOperation } from './client-data/workspace-host.js';
 /** Prefix all client routes live under (one webServer prefix registration). */
 export declare const CLIENT_ROUTE_PREFIX = "/_dsh/zen-remote/client";
 export declare const CLIENT_SESSION_HOSTS_ROUTE = "/_dsh/zen-remote/client/session-hosts";
@@ -42,6 +43,7 @@ export interface SessionHostSummary {
     displayName: string;
     state: RelayClient['state'];
     supportsCreateDraft?: true;
+    supportsWorkspaceAdd?: true;
 }
 /** POST `{serverUrl, code, name}`: redeem a desktop pairing code. */
 export declare const CLIENT_CLAIM_ROUTE = "/_dsh/zen-remote/client/claim";
@@ -278,7 +280,7 @@ export type SessionHostOperation = ({
 } & SessionHostLocator) | {
     operation: 'agentPresets';
     hostId: string;
-} | ({
+} | WorkspaceHostOperation | ({
     operation: 'setFavorite';
 } & SessionHostLocator & FavoriteUpdate) | {
     operation: 'selectModel';

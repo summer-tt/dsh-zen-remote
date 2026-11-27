@@ -113,7 +113,7 @@ export interface ForgeStatesState {
  * only exposes PR cards bound to currently accessible shared sessions.
  */
 export declare function createForgeStatesState(): ForgeStatesState;
-/** Filter `workspace/insertSessionBefore`'s `WorkspaceValue` (`{ workspace }`)
+/** Filter mutation results containing a `WorkspaceValue` (`{ workspace }`)
  * so `workspace.sessionIds` never reveals unshared session ids on the wire. */
 export declare function filterWorkspaceValueResult(value: unknown, isAccessible: Accessibility): unknown;
 /** Filter `session/search`'s `{ items, hasMore }` result so only hits whose

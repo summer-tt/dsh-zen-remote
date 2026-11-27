@@ -400,6 +400,11 @@ const RELAY_METHODS: Record<string, RelayMethod> = {
   'session/search': { fields: [], resultFilter: 'session-search' },
   'agentPresets/list': { fields: [] },
   'agentPresets/read': { fields: [] },
+  // Paired devices can browse host directories and register workspaces before
+  // a shared Session exists. The create result still filters session IDs.
+  'directoryPicker/list': { fields: [] },
+  'directoryPicker/createDirectory': { fields: [] },
+  'workspace/create': { fields: [], resultFilter: 'workspace-value' },
   // workspace — the global follow stream
   'workspace/follow': { fields: [], stream: true, streamFilter: 'workspace' },
   // forgePanel — 35 session-scoped endpoints (top-level sessionId)

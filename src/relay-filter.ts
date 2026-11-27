@@ -450,7 +450,7 @@ export function createForgeStatesState(): ForgeStatesState {
   }
 }
 
-/** Filter `workspace/insertSessionBefore`'s `WorkspaceValue` (`{ workspace }`)
+/** Filter mutation results containing a `WorkspaceValue` (`{ workspace }`)
  * so `workspace.sessionIds` never reveals unshared session ids on the wire. */
 export function filterWorkspaceValueResult(value: unknown, isAccessible: Accessibility): unknown {
   if (!isPlainObject(value) || !isPlainObject(value.workspace)) return value

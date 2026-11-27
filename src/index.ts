@@ -1499,6 +1499,10 @@ export function apply(ctx: Context, config: MobileNavConfig = {}): void {
           secret: relaySecret,
           store,
           gateway: createLocalOnlyGateway(gatewayService),
+          supportsWorkspaceAdd() {
+            const picker = relayCtx.reflect.get('directoryPicker') as { capability(): { kind: string } } | undefined
+            return picker?.capability().kind === 'browse'
+          },
           createWithFirstMessage(device, incoming, authorize) {
             const request = parseNewConversationRequest(incoming)
             return newConversation.submit(`paired-device:${device}`, request, {

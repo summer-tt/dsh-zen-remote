@@ -2863,3 +2863,20 @@ test('session-scoped raw catalog and model selection use the existing share wall
     { namespace: 'session', method: 'selectModel', args: { request: modelSelection } },
   ])
 })
+
+
+test('workspace registration filters unshared session IDs when reusing a directory', async (t) => {
+  const value = { created: false, workspace: { workspaceId: 'existing', sessionIds: ['shared', 'private'] } }
+  const { handler, calls, store } = makeParts('workspace-create', { value })
+  const server = await startServer(handler)
+  t.after(() => server.stop())
+  const pathName = '/_dsh/zen-remote/relay/v1/invoke'
+  const body = { namespace: 'workspace', method: 'create', args: { request: { path: '/remote/project' } } }
+  const invoke = (auth) => server.fetch(pathName, post(pathName, body, auth))
+  assert.equal((await invoke({ ...AUTH, 'x-zen-remote-role': 'mobile' })).status, 401)
+  store.share('shared')
+  assert.deepEqual(await (await invoke(AUTH)).json(), {
+    ok: true, value: { ...value, workspace: { ...value.workspace, sessionIds: ['shared'] } },
+  })
+  assert.deepEqual(calls.map(({ namespace, method, args }) => ({ namespace, method, args })), [body])
+})
