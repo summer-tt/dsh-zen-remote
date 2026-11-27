@@ -163,7 +163,6 @@ export interface NewConversationCopy {
  */
 export interface NewConversationView {
     readonly mainSessionId?: string | undefined;
-    readonly returnSessionId?: string | undefined;
     readonly target: DraftTargetState;
     readonly directory: HostDirectorySnapshot;
     /** Why the roster failed, when it did; shown with the retry action. */
@@ -247,7 +246,6 @@ export type UseNewConversationView = <S>(selector: (view: NewConversationView) =
 export interface NewConversationPanelActions {
     readonly onSelectHost: (hostId: HostId) => void;
     readonly onOpenHostDraft?: (hostId: HostId) => void;
-    readonly onReturnToSession?: () => void;
     readonly onSelectWorkspace: (workspaceId: WorkspaceId) => void;
     readonly remoteWorkspace?: (hostId: HostId, generation: number) => RemoteWorkspaceActions;
     readonly onSelectPreset?: (id: string) => void;

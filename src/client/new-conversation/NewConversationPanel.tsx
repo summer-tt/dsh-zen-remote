@@ -179,7 +179,6 @@ export interface NewConversationCopy {
  */
 export interface NewConversationView {
   readonly mainSessionId?: string | undefined
-  readonly returnSessionId?: string | undefined
   readonly target: DraftTargetState
   readonly directory: HostDirectorySnapshot
   /** Why the roster failed, when it did; shown with the retry action. */
@@ -261,7 +260,6 @@ export type UseNewConversationView = <S>(selector: (view: NewConversationView) =
 export interface NewConversationPanelActions {
   readonly onSelectHost: (hostId: HostId) => void
   readonly onOpenHostDraft?: (hostId: HostId) => void
-  readonly onReturnToSession?: () => void
   readonly onSelectWorkspace: (workspaceId: WorkspaceId) => void
   readonly remoteWorkspace?: (hostId: HostId, generation: number) => RemoteWorkspaceActions
   readonly onSelectPreset?: (id: string) => void
@@ -667,7 +665,7 @@ function DraftImageRail({ images, copy, locked, onRemove }: {
 /** Host and workspace selection for the native hero row. */
 export function NewConversationTarget({ useView, actions, renderWorkspace, renderDraftPreset, renderFactorySlot }: NewConversationPanelProps & { renderWorkspace?: NativeWorkspaceControl; renderDraftPreset?: NativeDraftPreset }) {
   const view = useView(state => state)
-  const { target, directory, workspaces, presets, agentPreset, copy, returnSessionId } = view
+  const { target, directory, workspaces, presets, agentPreset, copy } = view
   const [presetMenuOpen, setPresetMenuOpen] = useState(false)
   const mode = copy.title === '新会话' ? '模式' : 'Mode'
   const selectedWorkspace = workspaces.find(workspace => workspace.workspaceId === target.workspaceId)
@@ -688,9 +686,6 @@ export function NewConversationTarget({ useView, actions, renderWorkspace, rende
   return (
     <>
       <HostPicker copy={copy} directory={directory} hostId={target.hostId} onSelect={actions.onSelectHost} />
-      {returnSessionId !== undefined && <Button variant="outline" size="sm" onClick={actions.onReturnToSession}>
-        {copy.title === '新会话' ? '返回原会话' : 'Return to previous session'}
-      </Button>}
       {target.hostId === LOCAL_HOST && renderWorkspace !== undefined ? renderWorkspace({
         label: selectedWorkspace?.label,
         selectedId: selectedWorkspace?.displayId,

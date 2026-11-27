@@ -153,7 +153,6 @@ export function mountNewConversation(ctx: ClientContext): ((workspaceId?: string
   const navigation = typeof workspace?.registerNewSessionDraft === 'function' && typeof workspace.openSessionDraft === 'function'
     ? workspace as NativeDraftNavigation : undefined
   let draftNavigation: AbortSignal | undefined
-  let returnSessionId: SessionId | undefined
   const mainSession = () => mainSessionIdOf(ctx.sessions.list.getSnapshot().byId)
   const isOpen = () => navigation === undefined
     ? ctx.layout.panelInfo.getSnapshot().activePanelId === NEW_CONVERSATION_PANEL_ID
@@ -253,7 +252,7 @@ export function mountNewConversation(ctx: ClientContext): ((workspaceId?: string
       workspaces, canAddRemoteWorkspace: host?.state === 'online' && host.supportsWorkspaceAdd === true, presets, agentPreset: chosenPreset ?? presetRows.find(row => row.isDefault)?.id,
       text: drafts.read(state.hostId, state.workspaceId), selection: model(), modelPicker: pickerNode,
       copy: { ...words, hostOffline },
-      mainSessionId: mainSession(), returnSessionId, images, completionSessions: completionCache.rows,
+      mainSessionId: mainSession(), images, completionSessions: completionCache.rows,
       ...(imageFailure === undefined ? {} : { imageFailure }),
       imageSubmitUnavailable: state.hostId !== 'local' && host?.state === 'online' && host.supportsCreateDraftImages !== true,
       pendingSubmission: pending !== null,
@@ -545,7 +544,6 @@ export function mountNewConversation(ctx: ClientContext): ((workspaceId?: string
 
   function open(workspaceId?: string, hostId?: HostId): boolean {
     if (creationForbidden || (navigation === undefined && !enabled.getSnapshot())) return false
-    returnSessionId = hostId === undefined ? undefined : mainSession()
     if (hostId !== undefined) {
       if (!hostSelectable(directory.getSnapshot(), hostId)) return false
       target.selectHost(hostId)
@@ -578,11 +576,6 @@ export function mountNewConversation(ctx: ClientContext): ((workspaceId?: string
     actions: {
     onSelectHost: hostId => target.selectHost(hostId),
     onOpenHostDraft: hostId => { open(undefined, hostId) },
-    onReturnToSession: () => {
-      const id = returnSessionId
-      returnSessionId = undefined
-      if (id !== undefined && isOpen()) workspace?.openSession(id)
-    },
     onSelectWorkspace: selectWorkspace,
     remoteWorkspace,
     onSelectPreset: id => {
