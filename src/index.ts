@@ -56,6 +56,7 @@ import { ensurePeerIdentity, readPeerNetwork } from './state-store.js'
 import { NewConversationHost, NewConversationError, isManagedConversation, parseNewConversationRequest, saveRecentConversationHost } from './new-conversation/index.js'
 import { createDraftFileCandidates } from './new-conversation/draft-file-candidates.js'
 import { createNewConversationRoute, NEW_CONVERSATION_ROUTE } from './new-conversation-routes.js'
+import { createRemoteModelControlsRoute, REMOTE_MODEL_CONTROLS_ROUTE } from './magpie-controls.js'
 import type { RelayPool } from './relay-pool.js'
 import { createPeerEngine } from './peer/engine.js'
 import type { PeerEngine } from './peer/engine.js'
@@ -880,6 +881,11 @@ export function apply(ctx: Context, config: MobileNavConfig = {}): void {
   let submitLocalConversation: Parameters<typeof createNewConversationRoute>[0]['submitLocal'] =
     request => newConversation.submit('local-owner', request)
   ctx.inject(['webServer', 'connection'], webCtx => {
+    webCtx.effect(() => webCtx.webServer.register({
+      kind: 'exact',
+      path: REMOTE_MODEL_CONTROLS_ROUTE,
+      handler: createRemoteModelControlsRoute({ admit: createAdmitFn(webCtx), getPool: getRelayPool }),
+    }), 'dsh-zen-remote: remote model controls')
     webCtx.effect(() => webCtx.webServer.register({
       kind: 'exact',
       path: NEW_CONVERSATION_ROUTE,

@@ -40,6 +40,9 @@ import {
   DRAFT_FILE_CANDIDATES_METHOD, draftFileCandidateRows, draftFileCandidatesUnsupported, parseDraftFileCandidatesRequest,
   type ListDraftFileCandidates,
 } from './new-conversation/draft-file-candidates.js'
+import {
+  MAGPIE_CONTROLS_MAX_REPLY_BYTES, MAGPIE_CONTROLS_METHOD, magpieControlsFetchRequest, parseMagpieControlsRequest,
+} from './magpie-controls.js'
 import type { ShareStore } from './share-store.js'
 import { ensureServerIdMigrated, readStateFile, STATE_FILE_NAME, writeStateFile } from './state-store.js'
 import { decideHttpRoute, decideInvoke, decideStream, decideUploadQuery, parseEventResultBody } from './relay-access.js'
@@ -456,6 +459,36 @@ function responseJsonBytes(res: ServerResponse, status: number, bytes: Buffer): 
 
 function responseJson(res: ServerResponse, status: number, body: unknown): void {
   responseJsonBytes(res, status, Buffer.from(JSON.stringify(body)))
+}
+
+async function readMagpieControlsResponse(response: Response, signal: AbortSignal): Promise<string> {
+  if (response.body === null) throw new Error('Missing Magpie controls response body')
+  const reader = response.body.getReader()
+  const cancel = () => { void reader.cancel().catch(() => {}) }
+  signal.addEventListener('abort', cancel, { once: true })
+  try {
+    if (signal.aborted) cancel()
+    const chunks: Uint8Array[] = []
+    let bytes = 0
+    for (;;) {
+      signal.throwIfAborted()
+      const { value, done } = await reader.read()
+      signal.throwIfAborted()
+      if (done) break
+      bytes += value.byteLength
+      if (bytes > MAGPIE_CONTROLS_MAX_REPLY_BYTES) {
+        cancel()
+        throw new Error('Magpie controls response exceeds the size limit')
+      }
+      chunks.push(value)
+    }
+    const body = new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks, bytes))
+    JSON.parse(body)
+    return body
+  } finally {
+    signal.removeEventListener('abort', cancel)
+    reader.releaseLock()
+  }
 }
 
 /** Whether the client opted into negotiated `x-zr-content-encoding: gzip`. */
@@ -1895,7 +1928,8 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
       }
       const isDraftSubmission = namespace === 'session' && method === 'createWithFirstMessage'
       const isDraftFileCandidates = namespace === 'session' && method === DRAFT_FILE_CANDIDATES_METHOD
-      const decision = isDraftSubmission || isDraftFileCandidates
+      const isMagpieControls = namespace === 'session' && method === MAGPIE_CONTROLS_METHOD
+      const decision = isDraftSubmission || isDraftFileCandidates || isMagpieControls
         ? { allow: true as const, filter: undefined }
         : decideInvoke(namespace, method, args, isAccessible)
       if (!decision.allow) {
@@ -1924,6 +1958,42 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
       res.on('close', onClientGone)
       if (res.destroyed) onClientGone()
       try {
+        if (isMagpieControls) {
+          if (device === '') {
+            responseJson(res, 403, { ok: false, error: { code: 'forbidden' } })
+            return
+          }
+          const request = isPlainObject(args) && Object.keys(args).length === 1
+            ? parseMagpieControlsRequest(args.request)
+            : undefined
+          if (request === undefined) {
+            responseJson(res, 400, { ok: false, error: { code: 'bad-request' } })
+            return
+          }
+          if (!isAccessible(request.input.sessionId)) {
+            responseJson(res, 403, { ok: false, error: { code: 'not-shared' } })
+            return
+          }
+          const dispatch = options.getApiFetch?.()
+          if (dispatch === undefined) {
+            responseJson(res, 501, { ok: false, error: { code: 'unsupported' } })
+            return
+          }
+          hangUp.signal.throwIfAborted()
+          const upstream = await dispatch(magpieControlsFetchRequest(request, hangUp.signal))
+          const mediaType = upstream.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase()
+          if (mediaType !== 'application/json') {
+            void upstream.body?.cancel().catch(() => {})
+            if (upstream.status !== 404) throw new Error('Expected a JSON Magpie controls response')
+            // DSH's shared Fetch handler answers with a plain-text 404 when
+            // there is no matching route. Magpie's JSON 404 is a business result.
+            if (!hangUp.signal.aborted) responseJson(res, 501, { ok: false, error: { code: 'unsupported' } })
+            return
+          }
+          const body = await readMagpieControlsResponse(upstream, hangUp.signal)
+          if (!hangUp.signal.aborted) responseJson(res, 200, { ok: true, value: { status: upstream.status, body } })
+          return
+        }
         if (isDraftFileCandidates) {
           // Paired devices can already create a Session in any registered
           // Workspace. This dedicated lookup returns only contained path names
@@ -2139,7 +2209,9 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
         // The gateway's own failures (unknown namespace, absent service) are
         // business answers, not transport errors: they ride a 200 envelope
         // like every other result, with the gateway's string code preserved.
-        if (isDraftFileCandidates && !(error instanceof NewConversationError)) {
+        if (isMagpieControls) {
+          if (!res.destroyed && !hangUp.signal.aborted) responseJson(res, 502, { ok: false, error: { code: 'internal' } })
+        } else if (isDraftFileCandidates && !(error instanceof NewConversationError)) {
           if (!res.destroyed) responseJson(res, 500, { ok: false, error: { code: 'draft-file-candidates-failed' } })
         } else if ((isDraftSubmission || isDraftFileCandidates) && error instanceof NewConversationError) {
           if (!res.destroyed) responseJson(res, error.status, { ok: false, error: { code: error.code } })

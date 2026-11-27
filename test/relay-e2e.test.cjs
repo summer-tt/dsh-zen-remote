@@ -79,6 +79,117 @@ test('e2e: a shared session invoke returns the fake gateway value, an unshared o
   } finally { await env.stop() }
 })
 
+test('e2e: shared Magpie controls use the exact Fetch route and preserve GET, single and batch POST input', async () => {
+  const address = { sessionId: 'session-a', provider: 'group', model: 'gpt-6.2-sol' }
+  const seen = []
+  const body = '{ "options": ["fast", 500000] }'
+  const env = await boot({
+    shared: [address.sessionId],
+    apiFetch: async (request) => {
+      const url = new URL(request.url)
+      seen.push({
+        path: url.pathname,
+        method: request.method,
+        query: Object.fromEntries(url.searchParams),
+        contentType: request.headers.get('content-type'),
+        body: request.body === null ? null : await request.json(),
+      })
+      return new Response(body, { status: 200, headers: { 'content-type': 'application/json; charset=utf-8' } })
+    },
+  })
+  try {
+    const invoke = (method, input) => env.client.invoke('session', 'magpieControls', { request: { method, input } })
+    const controlsPath = '/api/magpie-session-controls'
+    assert.deepEqual(await invoke('GET', address), { status: 200, body })
+    assert.deepEqual(seen[0], { path: controlsPath, method: 'GET', query: address, contentType: null, body: null })
+    const writes = [
+      { field: 'speed', value: 'fast' },
+      { field: 'contextWindow', value: 500000 },
+      { changes: { speed: 'fast', contextWindow: 500000, reasoningEffort: 'medium' }, expectedRevision: 'rev-1', allowRunning: true },
+    ]
+    for (const [index, write] of writes.entries()) {
+      const input = { ...address, ...write }
+      assert.deepEqual(await invoke('POST', input), { status: 200, body })
+      assert.deepEqual(seen[index + 1], { path: controlsPath, method: 'POST', query: {}, contentType: 'application/json', body: input })
+    }
+    assert.deepEqual(env.invokeCalls, [], 'the specialized call bypasses the generic gateway')
+  } finally { await env.stop() }
+})
+
+test('e2e: Magpie controls refuse unshared sessions, virtual IDs and alternate coordinates', async () => {
+  const address = { sessionId: 'session-a', provider: 'group', model: 'gpt-6.2-sol' }
+  const virtualSession = toVirtual('12345678', address.sessionId)
+  const env = await boot({ shared: [address.sessionId, virtualSession], apiFetch: () => Response.json({}) })
+  try {
+    const invoke = (input, method = 'GET') => env.client.invoke('session', 'magpieControls', { request: { method, input } })
+    const relayFailure = (code, status) => (error) => error instanceof RelayError && error.code === code && error.status === status
+    await assert.rejects(() => invoke({ ...address, sessionId: 'session-private' }), relayFailure('not-shared', 403))
+    await assert.rejects(() => invoke({ ...address, sessionId: virtualSession }), relayFailure('bad-request', 400))
+    await assert.rejects(() => invoke({ ...address, provider: toVirtual('12345678', address.provider) }), relayFailure('bad-request', 400))
+    await assert.rejects(() => invoke({ ...address, field: 'speed', value: 'fast', path: '/api/other' }, 'POST'), relayFailure('bad-request', 400))
+    await assert.rejects(
+      () => env.client.invoke('session', 'magpieControls', { request: { method: 'GET', input: address }, route: '/api/other' }),
+      relayFailure('bad-request', 400),
+    )
+    for (const [namespace, method] of [['Session', 'magpieControls'], ['session/', 'magpieControls'], ['session', 'MagpieControls']]) {
+      await assert.rejects(
+        () => env.client.invoke(namespace, method, { request: { method: 'GET', input: address } }),
+        relayFailure('forbidden-method', 403),
+      )
+    }
+    env.store.unshare(address.sessionId, 'manual')
+    await assert.rejects(() => invoke({ ...address, field: 'speed', value: 'fast' }, 'POST'), relayFailure('not-shared', 403))
+    assert.deepEqual(env.apiFetchCalls, [])
+    assert.deepEqual(env.invokeCalls, [])
+  } finally { await env.stop() }
+})
+
+test('e2e: Magpie controls distinguish missing routes and JSON errors and limit the response body', async () => {
+  const address = { sessionId: 'session-a', provider: 'group', model: 'gpt-6.2-sol' }
+  let response
+  const env = await boot({ shared: [address.sessionId], apiFetch: () => response })
+  try {
+    const invoke = () => env.client.invoke('session', 'magpieControls', { request: { method: 'GET', input: address } })
+    response = new Response('not found', { status: 404 })
+    await assert.rejects(() => invoke(), (error) => error instanceof RelayError && error.code === 'unsupported' && error.status === 501)
+    const body = '{"code":"session-not-found"}'
+    response = new Response(body, { status: 404, headers: { 'content-type': 'application/json' } })
+    assert.deepEqual(await invoke(), { status: 404, body })
+    const internal = (error) => error instanceof RelayError && error.code === 'internal' && error.status === 502
+    response = new Response('<html>private</html>', { status: 500 })
+    await assert.rejects(() => invoke(), internal)
+    response = new Response('invalid JSON', { headers: { 'content-type': 'application/json' } })
+    await assert.rejects(() => invoke(), internal)
+    response = Response.json('x'.repeat(32 * 1024))
+    await assert.rejects(() => invoke(), internal)
+  } finally { await env.stop() }
+})
+
+test('e2e: aborting a Magpie controls invoke aborts the Fetch request and cancels its response body', async () => {
+  const address = { sessionId: 'session-a', provider: 'group', model: 'gpt-6.2-sol' }
+  let bodyStarted = false
+  let bodyCancelled = false
+  const env = await boot({
+    shared: [address.sessionId],
+    apiFetch: () => new Response(new ReadableStream({
+      pull() { bodyStarted = true },
+      cancel() { bodyCancelled = true },
+    }, { highWaterMark: 0 }), { headers: { 'content-type': 'application/json' } }),
+  })
+  const controller = new AbortController()
+  try {
+    const pending = env.client.invoke('session', 'magpieControls', { request: { method: 'GET', input: address } }, controller.signal)
+    const refused = assert.rejects(pending, (error) => error instanceof RelayError && error.code === 'aborted')
+    await waitFor(() => bodyStarted)
+    controller.abort()
+    await refused
+    await waitFor(() => env.apiFetchCalls[0].signal.aborted && bodyCancelled)
+  } finally {
+    controller.abort()
+    await env.stop()
+  }
+})
+
 test('e2e: workspaceFiles/readBytes rides the binary-envelope relay directly as Uint8Array', async () => {
   const bytes = new Uint8Array([0, 1, 2, 250, 255, 128, 200])
   const env = await boot({

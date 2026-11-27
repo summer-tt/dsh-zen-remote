@@ -9,6 +9,7 @@ const { pathToFileURL } = require('node:url')
 const { request } = require('./util.cjs')
 const { RelayError, relayCredentialsDigest } = require('../lib/relay-client.js')
 const { toVirtual } = require('../lib/virtual-id.js')
+const { createRemoteModelControlsRoute, REMOTE_MODEL_CONTROLS_ROUTE } = require('../lib/magpie-controls.js')
 const { createBridgeRegistry, T3_FAVORITES_PATH, T3_FAVORITES_PLUGIN, T3_FAVORITES_SET_PATH } = require('../lib/plugin-bridge.js')
 const {
   sendJson,
@@ -2449,6 +2450,50 @@ test('session-host scopes reads and original-provider model selection to one pai
   b.client.state = 'offline'
   assert.equal((await call({ operation: 'modelCatalog', hostId: 'ffffffff' })).error.code, 'remote-offline')
   assert.equal(calls.length, before)
+})
+
+test('remote model controls route keeps capabilities and writes on the selected Host', async (t) => {
+  const calls = []
+  const address = { sessionId: toVirtual('ffffffff', 'shared'), provider: toVirtual('ffffffff', 'group'), model: 'gpt-6.2-sol' }
+  const nativeAddress = { sessionId: 'shared', provider: 'group', model: address.model }
+  const value = { batch: true, revision: 'r1', reasoningEffort: 'medium',
+    speed: { value: 'fast', options: ['standard', 'fast'] },
+    contextWindow: { value: 500000, options: [272000, 500000] } }
+  let unsupported = false
+  const a = makeEntry('a', 'abcd1234', gwUrl, 'A', { invoke: () => assert.fail('wrong Host') })
+  const b = makeEntry('b', 'ffffffff', gwUrl, 'B', { invoke: async (namespace, method, args, signal) => {
+    calls.push([namespace, method, args])
+    assert.equal(signal.aborted, false)
+    if (unsupported) throw new RelayError('forbidden-method', 'unsupported on older relay', 403)
+    return { status: 200, body: JSON.stringify({ ok: true, value }) }
+  } })
+  const handler = createRemoteModelControlsRoute({ admit: () => ({ peer: {} }), getPool: () => fakePool([a, b]) })
+  const server = http.createServer((req, res) => { void handler(req, res) })
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  t.after(() => closeServer(server))
+  const port = server.address().port
+  const read = (query = new URLSearchParams(address)) => request(port, { method: 'GET', path: `${REMOTE_MODEL_CONTROLS_ROUTE}?${query}` })
+  const change = { changes: { contextWindow: 500000, speed: 'fast', reasoningEffort: 'medium' }, expectedRevision: 'r1', allowRunning: true }
+  const write = (body, headers = sameOrigin(port)) => request(port, { method: 'POST', path: REMOTE_MODEL_CONTROLS_ROUTE, headers, body })
+  assert.deepEqual(JSON.parse((await read()).body), { ok: true, value })
+  assert.deepEqual(JSON.parse((await write({ ...address, ...change })).body), { ok: true, value })
+  assert.deepEqual(calls, [
+    ['session', 'magpieControls', { request: { method: 'GET', input: nativeAddress } }],
+    ['session', 'magpieControls', { request: { method: 'POST', input: { ...nativeAddress, ...change } } }],
+  ])
+  assert.equal((await read(new URLSearchParams({ ...address, provider: toVirtual('abcd1234', 'group') }))).status, 400)
+  assert.equal((await read(`${new URLSearchParams(address)}&sessionId=duplicate`)).status, 400)
+  assert.equal((await write({ ...address, ...change }, { 'sec-fetch-site': 'cross-site' })).status, 403)
+  assert.equal((await write({ ...address, changes: { anything: true } })).status, 400)
+  b.client.state = 'offline'
+  assert.equal(JSON.parse((await read()).body).error.code, 'remote-offline')
+  assert.equal(calls.length, 2)
+  b.client.state = 'online'
+  assert.deepEqual(JSON.parse((await read()).body), { ok: true, value })
+  unsupported = true
+  const missing = await read()
+  assert.equal(missing.status, 404)
+  assert.equal(JSON.parse(missing.body).error.code, 'remote-unsupported')
 })
 
 test('session-host sends directory operations only to the selected Host', async (t) => {
